@@ -1,6 +1,6 @@
-﻿<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks>net8.0-windows;net48</TargetFrameworks>
+    <TargetFramework>net9.0-windows10.0.19041.0</TargetFramework>
     <OutputType>WinExe</OutputType>
     <RootNamespace>NAudioWpfDemo</RootNamespace>
     <AssemblyName>NAudioWpfDemo</AssemblyName>
@@ -9,6 +9,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\NAudio.Extras\NAudio.Extras.csproj" />
+    <ProjectReference Include="..\NAudio.Sampler\NAudio.Sampler.csproj" />
     <ProjectReference Include="..\NAudio.WinForms\NAudio.WinForms.csproj" />
     <ProjectReference Include="..\NAudio\NAudio.csproj" />
   </ItemGroup>

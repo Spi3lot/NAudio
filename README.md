@@ -1,10 +1,22 @@
 # NAudio
 
-[![GitHub](https://img.shields.io/github/license/naudio/NAudio)](https://github.com/naudio/NAudio/blob/master/license.txt) [![Nuget](https://img.shields.io/nuget/v/NAudio)](https://www.nuget.org/packages/NAudio/) [![Build Status](https://dev.azure.com/naudio/NAudio/_apis/build/status/naudio.NAudio)](https://dev.azure.com/naudio/NAudio/_build)
+[![GitHub](https://img.shields.io/github/license/naudio/NAudio)](https://github.com/naudio/NAudio/blob/main/LICENSE) [![Nuget](https://img.shields.io/nuget/v/NAudio)](https://www.nuget.org/packages/NAudio/) [![Build](https://github.com/naudio/NAudio/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/naudio/NAudio/actions/workflows/build.yml)
 
 NAudio is an open source .NET audio library written by [Mark Heath](https://markheath.net)
 
 ![NAudio logo](naudio-logo.png)
+
+## NAudio 3 pre-release
+
+NAudio 3 is now available as a pre-release on NuGet:
+
+```sh
+dotnet add package NAudio --prerelease
+```
+
+NAudio 2 remains the stable channel and will receive critical bug fixes if necessary.
+
+**For existing contributors:** the default branch has moved from `master` to `main` to make room for NAudio 3 development. NAudio 2 maintenance now lives on `release/2.x` (formerly `master`). Open PRs that targeted `master` have been automatically retargeted to `release/2.x` — if your change is intended for NAudio 3, it will need to be rebased against `main` and update the PR target (I'm hoping to review open PRs in the near future to decide which ones should be kept).
 
 ## Features
 
@@ -18,7 +30,7 @@ NAudio is an open source .NET audio library written by [Mark Heath](https://mark
   * AIFF
   * MP3 (using ACM, DMO or MFT)
   * G.711 mu-law and a-law
-  * ADPCM, G.722, Speex (using NSpeex)
+  * ADPCM, G.722, Opus (using Concentus)
   * WMA, AAC, MP4 and more others with Media Foundation
 * Convert between various forms of uncompressed audio
   * Change the number of channels - Mono to stereo, stereo to mono
@@ -50,14 +62,12 @@ NAudio is an open source .NET audio library written by [Mark Heath](https://mark
   * Send MIDI events
 * An extensible programming model
   * All base classes easily inherited from for you to add your custom components
-* Support for UWP (preliminary)
-  * Create Windows 8 Store apps and Windows Universal apps
 
 ## Getting Started
 
 The easiest way to install NAudio into your project is to install the latest [NAudio NuGet package](https://www.nuget.org/packages/NAudio/). Prerelease versions of NAudio are also often made available on NuGet.
 
-NAudio comes with several demo applications which are the quickest way to see how to use the various features of NAudio. You can explore the source code [here](https://github.com/naudio/NAudio/tree/master/NAudioDemo).
+NAudio comes with several demo applications which are the quickest way to see how to use the various features of NAudio. You can explore the source code [here](https://github.com/naudio/NAudio/tree/main/NAudioDemo).
 
 ## Tutorials
 
@@ -68,12 +78,14 @@ NAudio comes with several demo applications which are the quickest way to see ho
 * [Playing Audio from a URL](Docs/PlayAudioFromUrl.md)
 * [Choose an audio output device type](Docs/OutputDeviceTypes.md)
 * [Enumerate and select Output Devices](Docs/EnumerateOutputDevices.md)
-* [Creating and configuring a WasapiOut device](Docs/WasapiOut.md)
+* [Playing audio with WasapiPlayer (recommended for WASAPI)](Docs/WasapiPlayer.md)
+* [Creating and configuring a WasapiOut device (legacy)](Docs/WasapiOut.md)
 * [Implement "Fire and Forget" Playback (e.g. game sound effects)](http://markheath.net/post/fire-and-forget-audio-playback-with)
 * [Play streaming MP3](http://markheath.net/post/how-to-play-back-streaming-mp3-using)
 * [Handling playback stopped](Docs/PlaybackStopped.md)
 * [Understanding WaveStream, IWavePlayer and ISampleProvider](Docs/WaveProviders.md)
 * [Playing Audio with ASIO](Docs/AsioPlayback.md)
+* [Migrating from AsioOut to AsioDevice (NAudio 3)](Docs/AsioMigration.md)
 
 ### Working with Codecs
 
@@ -92,7 +104,6 @@ NAudio comes with several demo applications which are the quickest way to see ho
 * [Merge MP3 Files](http://markheath.net/post/merging-mp3-files-with-naudio-in-c-and)
 * [Convert an AIFF file to WAV](http://markheath.net/post/how-to-convert-aiff-files-to-wav-using)
 * [Use the WavFileWriter class](http://markheath.net/post/how-to-use-wavefilewriter)
-* [Create an ID3v2 tag](http://naudio.codeplex.com/wikipage?title=Create%20an%20ID3v2%20Tag)
 
 ### Manipulating audio
 
@@ -107,6 +118,7 @@ NAudio comes with several demo applications which are the quickest way to see ho
 * [Adjust the pitch of audio using SmbPitchShiftingSampleProvider](Docs/SmbPitchShiftingSampleProvider.md)
 * [Varispeed playback with NAudio using SoundTouch](http://markheath.net/post/varispeed-naudio-soundtouch)
 * [Fade audio in and out](Docs/FadeInOutSampleProvider.md)
+* [Apply audio effects with NAudio.Effects](Docs/AudioEffects.md)
 
 ### Generating audio
 
@@ -116,9 +128,13 @@ NAudio comes with several demo applications which are the quickest way to see ho
 ### Recording
 
 * [Recording a WAV file from a WinForms application](Docs/RecordWavFileWinFormsWaveIn.md)
-* [Capturing system audio with WasapiLoopbackCapture](Docs/WasapiLoopbackCapture.md)
+* [Recording audio with WasapiRecorder (recommended for WASAPI)](Docs/WasapiRecorder.md)
+* [Capturing system audio with WasapiLoopbackCapture (legacy)](Docs/WasapiLoopbackCapture.md)
 * [Play and Record audio at the same time](http://markheath.net/post/how-to-record-and-play-audio-at-same)
 * [Record Audio with ASIO](Docs/AsioRecording.md)
+* [Duplex Processing with ASIO](Docs/AsioDuplex.md)
+* [ASIO Channel Mapping](Docs/AsioChannelMapping.md)
+* [Handling ASIO Driver Resets](Docs/AsioDriverReset.md)
 
 ### Visualization
 
@@ -135,7 +151,6 @@ NAudio comes with several demo applications which are the quickest way to see ho
 
 Additional sources of documentation for NAudio are:
 
-* [Original Documentation on CodePlex](http://naudio.codeplex.com/documentation)
 * [NAudio articles on Mark Heath's blog](http://markheath.net/category/naudio)
 
 ## NAudio Training Courses
@@ -151,7 +166,7 @@ To be successful developing applications that process digital audio, there are s
 
 ## How do I...?
 
-The best way to learn how to use NAudio is to download the source code and look at the two demo applications - [NAudioDemo](https://github.com/naudio/NAudio/tree/master/NAudioDemo) and [NAudioWpfDemo](https://github.com/naudio/NAudio/tree/master/NAudioWpfDemo). These demonstrate several of the key capabilities of the NAudio framework. They also have the advantage of being kept up to date, whilst some of the tutorials you will find on the internet refer to old versions of NAudio.
+The best way to learn how to use NAudio is to download the source code and look at the two demo applications - [NAudioDemo](https://github.com/naudio/NAudio/tree/main/NAudioDemo) and [NAudioWpfDemo](https://github.com/naudio/NAudio/tree/main/NAudioWpfDemo). These demonstrate several of the key capabilities of the NAudio framework. They also have the advantage of being kept up to date, whilst some of the tutorials you will find on the internet refer to old versions of NAudio.
 
 ## FAQ
 

@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using NAudio.CoreAudioApi.Interfaces;
 
 namespace NAudio.CoreAudioApi
@@ -44,8 +46,16 @@ namespace NAudio.CoreAudioApi
                     throw new ArgumentOutOfRangeException(nameof(index));
                 }
 
-                partsListInterface.GetPart(index, out IPart part);
-                return new Part(part);
+                partsListInterface.GetPart(index, out var ptr);
+                try
+                {
+                    return new Part((IPart)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                        ptr, CreateObjectFlags.UniqueInstance));
+                }
+                finally
+                {
+                    Marshal.Release(ptr);
+                }
             }
         }
     }

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Windows;
 using System.Windows.Input;
 using Microsoft.Win32;
 using NAudio.Extras;
@@ -55,6 +56,12 @@ namespace NAudioWpfDemo.AudioPlaybackDemo
                     this.selectedVisualization = value;
                     OnPropertyChanged("SelectedVisualization");
                     OnPropertyChanged("Visualization");
+                    // If a file is already loaded when the user switches visualization, make sure
+                    // the newly-selected one gets the sample rate too.
+                    if (this.selectedVisualization != null && audioPlayback.SampleRate > 0)
+                    {
+                        this.selectedVisualization.OnSourceChanged(audioPlayback.SampleRate);
+                    }
                 }
             }
         }
@@ -71,7 +78,8 @@ namespace NAudioWpfDemo.AudioPlaybackDemo
         {
             if (this.SelectedVisualization != null)
             {
-                this.SelectedVisualization.OnFftCalculated(e.Result);
+                Application.Current?.Dispatcher?.BeginInvoke(() =>
+                    this.SelectedVisualization?.OnFftCalculated(e.Result));
             }
         }
 
@@ -79,19 +87,23 @@ namespace NAudioWpfDemo.AudioPlaybackDemo
         {
             if (this.SelectedVisualization != null)
             {
-                this.SelectedVisualization.OnMaxCalculated(e.MinSample, e.MaxSample);
+                Application.Current?.Dispatcher?.BeginInvoke(() =>
+                    this.SelectedVisualization?.OnMaxCalculated(e.MinSample, e.MaxSample));
             }
         }
 
         private void OpenFile()
         {
             OpenFileDialog openFileDialog = new OpenFileDialog();
-            openFileDialog.Filter = "All Supported Files (*.wav;*.mp3)|*.wav;*.mp3|All Files (*.*)|*.*";
+            openFileDialog.Filter = "All Supported Files|*.wav;*.aiff;*.mp3;*.wma;*.aac;*.mp4;*.m4a;*.flac;*.opus;*.ogg;*.mka;*.webm|All Files (*.*)|*.*";
             bool? result = openFileDialog.ShowDialog();
             if (result.HasValue && result.Value)
             {
                 this.selectedFile = openFileDialog.FileName;
                 audioPlayback.Load(this.selectedFile);
+                // Now that we know the sample rate, let the visualization configure itself
+                // (e.g. the spectrum analyser uses it for the frequency x-axis).
+                this.selectedVisualization?.OnSourceChanged(audioPlayback.SampleRate);
             }
         }
 

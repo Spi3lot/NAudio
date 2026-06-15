@@ -1,13 +1,34 @@
 // created on 27/12/2002 at 20:20
 using System;
 using System.IO;
-
 // ReSharper disable once CheckNamespace
-namespace NAudio.Wave 
+namespace NAudio.Wave
 {
     /// <summary>
     /// Base class for all WaveStream classes. Derives from stream.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Implementing a WaveStream — which Read method should I override?</b>
+    /// </para>
+    /// <para>
+    /// <see cref="Stream.Read(byte[], int, int)"/> is abstract on <see cref="Stream"/> and must be overridden.
+    /// <see cref="Stream.Read(Span{byte})"/> is virtual — its default implementation rents a buffer from
+    /// <see cref="System.Buffers.ArrayPool{T}.Shared"/>, calls the byte[] overload, and copies into the span.
+    /// This is functionally correct but incurs one pool rent and one extra copy per read.
+    /// </para>
+    /// <para>
+    /// For best performance, implement your read logic in the <c>Read(Span&lt;byte&gt;)</c> overload and
+    /// make the byte[] overload forward to it:
+    /// <code>
+    /// public override int Read(Span&lt;byte&gt; buffer) { /* real read logic */ }
+    /// public override int Read(byte[] array, int offset, int count)
+    ///     =&gt; Read(array.AsSpan(offset, count));
+    /// </code>
+    /// All of NAudio's built-in readers follow this pattern. Legacy subclasses that only override the byte[]
+    /// overload continue to work correctly, but pay the pooled-bridge cost on span-based reads.
+    /// </para>
+    /// </remarks>
     public abstract class WaveStream : Stream, IWaveProvider
     {
         /// <summary>
@@ -95,17 +116,20 @@ namespace NAudio.Wave
         }
 
         /// <summary>
-        /// The current position in the stream in Time format
+        /// The current position in the stream in Time format.
+        /// On set, the resulting byte position is rounded down to a multiple of
+        /// <see cref="BlockAlign"/> so the stream stays on a valid block boundary.
         /// </summary>
         public virtual TimeSpan CurrentTime
         {
             get
             {
-                return TimeSpan.FromSeconds((double)Position / WaveFormat.AverageBytesPerSecond);                
+                return TimeSpan.FromSeconds((double)Position / WaveFormat.AverageBytesPerSecond);
             }
             set
             {
-                Position = (long) (value.TotalSeconds * WaveFormat.AverageBytesPerSecond);
+                long bytePosition = (long)(value.TotalSeconds * WaveFormat.AverageBytesPerSecond);
+                Position = bytePosition - (bytePosition % BlockAlign);
             }
         }
 

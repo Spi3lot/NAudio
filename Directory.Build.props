@@ -1,11 +1,67 @@
 <Project>
   <PropertyGroup>
+    <!-- Lockstep version for all NAudio NuGet packages. CI overrides
+         <VersionSuffix> on pre-release builds (e.g. preview.NN). Sample/tool
+         apps with their own <Version> in the csproj override this. -->
+    <VersionPrefix>3.0.0</VersionPrefix>
+
+    <!-- Common NuGet package metadata. Per-package csprojs override
+         individual properties when needed (e.g. the NAudio meta-package
+         sets its own <Authors>Mark Heath &amp; Contributors</Authors>). -->
+    <Authors>Mark Heath</Authors>
+    <Copyright>© Mark Heath 2026</Copyright>
+    <PackageProjectUrl>https://github.com/naudio/NAudio</PackageProjectUrl>
+    <PackageTags>C# .NET audio sound</PackageTags>
+    <RepositoryUrl>https://github.com/naudio/NAudio</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageIcon>naudio-icon.png</PackageIcon>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
+    <!-- Strong naming. The .snk lives at the repo root, anchored via
+         $(MSBuildThisFileDirectory) so csprojs at any depth resolve it.
+         Tool/demo projects inherit this; the key is checked into the repo
+         so signing succeeds across the board. If a specific project ever
+         needs to opt out, set <SignAssembly>false</SignAssembly> in its csproj. -->
+    <SignAssembly>true</SignAssembly>
+    <AssemblyOriginatorKeyFile>$(MSBuildThisFileDirectory)NAudioStrongNameKey.snk</AssemblyOriginatorKeyFile>
+
+    <!-- SourceLink + symbol packages + reproducible CI builds.
+         .NET 8+ ships SourceLink in the SDK; PublishRepositoryUrl=true
+         activates it for GitHub-hosted repos without any PackageReference.
+         Symbol packages (.snupkg) sit next to .nupkg and are pushed
+         alongside automatically by `dotnet nuget push`. CI sets
+         ContinuousIntegrationBuild=true for reproducible binaries; local
+         dev builds keep absolute paths for easier debugging. -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+
+    <!-- SBOM generation. Microsoft.Sbom.Targets (the MSBuild wrapper over
+         microsoft/sbom-tool) embeds an SPDX 2.2 manifest inside each packed
+         .nupkg under /_manifest/spdx_2.2/, alongside its SHA-256 — so every
+         package carries a Software Bill of Materials to whoever downloads it
+         from NuGet, no separate artifact to chase. Gated to Release so local
+         Debug builds/packs stay fast; CI and the release workflow both build
+         Release, so published packages always carry an SBOM. The PackageReference
+         lives in the ItemGroup below. -->
+    <GenerateSBOM Condition="'$(Configuration)' == 'Release'">true</GenerateSBOM>
+
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <!-- Enable analyzers but don't set default severities - .globalconfig controls rule severities -->
     <AnalysisLevel>latest-none</AnalysisLevel>
     <!-- These rules have existing violations to fix incrementally.
          Once fixed, remove from here to let them become errors. -->
-    <WarningsNotAsErrors>$(WarningsNotAsErrors);CA2245;CA2201;CA2020;CA1001</WarningsNotAsErrors>
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);CA2245;CA2201;CA1001</WarningsNotAsErrors>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Build/pack-time only: contributes no runtime assemblies and does not
+         flow to consumers (PrivateAssets=all). Its targets only do work during
+         `pack` when GenerateSBOM is true, so test and sample/tool projects that
+         are never packed to NuGet are unaffected. -->
+    <PackageReference Include="Microsoft.Sbom.Targets" Version="4.1.5" PrivateAssets="all" />
+  </ItemGroup>
 </Project>

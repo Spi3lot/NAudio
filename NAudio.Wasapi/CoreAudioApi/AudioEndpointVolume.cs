@@ -1,37 +1,23 @@
-﻿/*
-  LICENSE
-  -------
-  Copyright (C) 2007 Ray Molenkamp
-
-  This source code is provided 'as-is', without any express or implied
-  warranty.  In no event will the authors be held liable for any damages
-  arising from the use of this source code or the software it produces.
-
-  Permission is granted to anyone to use this source code for any purpose,
-  including commercial applications, and to alter it and redistribute it
-  freely, subject to the following restrictions:
-
-  1. The origin of this source code must not be misrepresented; you must not
-     claim that you wrote the original source code.  If you use this source code
-     in a product, an acknowledgment in the product documentation would be
-     appreciated but is not required.
-  2. Altered source versions must be plainly marked as such, and must not be
-     misrepresented as being the original source code.
-  3. This notice may not be removed or altered from any source distribution.
-*/
-
 using System;
-using NAudio.CoreAudioApi.Interfaces;
+using System.Threading;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
+using NAudio.CoreAudioApi.Interfaces;
 
 namespace NAudio.CoreAudioApi
 {
     /// <summary>
-    /// Audio Endpoint Volume
+    /// Audio Endpoint Volume.
+    /// Volume change notifications from COM arrive on a background thread.
+    /// If a <see cref="SynchronizationContext"/> is captured at construction time,
+    /// notifications are marshaled to that context (e.g. the UI thread).
     /// </summary>
     public class AudioEndpointVolume : IDisposable
     {
-        private readonly IAudioEndpointVolume audioEndPointVolume;
+        private static readonly Guid IID_IAudioEndpointVolumeCallback = new Guid("657804FA-D6AD-4496-8A60-352752AF4F89");
+
+        private IAudioEndpointVolume audioEndPointVolume;
+        private readonly SynchronizationContext syncContext;
         private AudioEndpointVolumeCallback callBack;
 
         private Guid notificationGuid = Guid.Empty;
@@ -76,12 +62,12 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(audioEndPointVolume.GetMasterVolumeLevel(out var result));
+                CoreAudioException.ThrowIfFailed(audioEndPointVolume.GetMasterVolumeLevel(out var result));
                 return result;
             }
             set
             {
-                Marshal.ThrowExceptionForHR(audioEndPointVolume.SetMasterVolumeLevel(value, ref notificationGuid));
+                CoreAudioException.ThrowIfFailed(audioEndPointVolume.SetMasterVolumeLevel(value, ref notificationGuid));
             }
         }
 
@@ -92,12 +78,12 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(audioEndPointVolume.GetMasterVolumeLevelScalar(out var result));
+                CoreAudioException.ThrowIfFailed(audioEndPointVolume.GetMasterVolumeLevelScalar(out var result));
                 return result;
             }
             set
             {
-                Marshal.ThrowExceptionForHR(audioEndPointVolume.SetMasterVolumeLevelScalar(value, ref notificationGuid));
+                CoreAudioException.ThrowIfFailed(audioEndPointVolume.SetMasterVolumeLevelScalar(value, ref notificationGuid));
             }
         }
 
@@ -108,12 +94,12 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(audioEndPointVolume.GetMute(out var result));
+                CoreAudioException.ThrowIfFailed(audioEndPointVolume.GetMute(out var result));
                 return result;
             }
             set
             {
-                Marshal.ThrowExceptionForHR(audioEndPointVolume.SetMute(value, ref notificationGuid));
+                CoreAudioException.ThrowIfFailed(audioEndPointVolume.SetMute(value, ref notificationGuid));
             }
         }
 
@@ -122,7 +108,7 @@ namespace NAudio.CoreAudioApi
         /// </summary>
         public void VolumeStepUp()
         {
-            Marshal.ThrowExceptionForHR(audioEndPointVolume.VolumeStepUp(ref notificationGuid));
+            CoreAudioException.ThrowIfFailed(audioEndPointVolume.VolumeStepUp(ref notificationGuid));
         }
 
         /// <summary>
@@ -130,29 +116,78 @@ namespace NAudio.CoreAudioApi
         /// </summary>
         public void VolumeStepDown()
         {
-            Marshal.ThrowExceptionForHR(audioEndPointVolume.VolumeStepDown(ref notificationGuid));
+            CoreAudioException.ThrowIfFailed(audioEndPointVolume.VolumeStepDown(ref notificationGuid));
         }
 
         /// <summary>
         /// Creates a new Audio endpoint volume
         /// </summary>
-        /// <param name="realEndpointVolume">IAudioEndpointVolume COM interface</param>
-        internal AudioEndpointVolume(IAudioEndpointVolume realEndpointVolume)
+        /// <param name="nativePointer">Raw COM pointer — ownership is transferred to this instance</param>
+        internal AudioEndpointVolume(IntPtr nativePointer)
         {
-            audioEndPointVolume = realEndpointVolume;
+            syncContext = SynchronizationContext.Current;
+            try
+            {
+                audioEndPointVolume = (IAudioEndpointVolume)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                    nativePointer, CreateObjectFlags.UniqueInstance);
+            }
+            finally
+            {
+                Marshal.Release(nativePointer);
+            }
             Channels = new AudioEndpointVolumeChannels(audioEndPointVolume);
             StepInformation = new AudioEndpointVolumeStepInformation(audioEndPointVolume);
-            Marshal.ThrowExceptionForHR(audioEndPointVolume.QueryHardwareSupport(out var hardwareSupp));
+            CoreAudioException.ThrowIfFailed(audioEndPointVolume.QueryHardwareSupport(out var hardwareSupp));
             HardwareSupport = (EEndpointHardwareSupport)hardwareSupp;
             VolumeRange = new AudioEndpointVolumeVolumeRange(audioEndPointVolume);
             callBack = new AudioEndpointVolumeCallback(this);
-            Marshal.ThrowExceptionForHR(audioEndPointVolume.RegisterControlChangeNotify(callBack));
+            var callBackPtr = QueryCallbackInterface(callBack);
+            try
+            {
+                CoreAudioException.ThrowIfFailed(audioEndPointVolume.RegisterControlChangeNotify(callBackPtr));
+            }
+            finally
+            {
+                Marshal.Release(callBackPtr);
+            }
         }
-        
+
         internal void FireNotification(AudioVolumeNotificationData notificationData)
         {
-            OnVolumeNotification?.Invoke(notificationData);
+            var handler = OnVolumeNotification;
+            if (handler != null)
+            {
+                if (syncContext != null)
+                {
+                    syncContext.Post(_ => handler(notificationData), null);
+                }
+                else
+                {
+                    handler(notificationData);
+                }
+            }
         }
+
+        // ComWrappers CCWs return a distinct IntPtr per interface (including a separate
+        // vtable for IUnknown). WASAPI's RegisterControlChangeNotify expects a pointer
+        // whose vtable starts with the IAudioEndpointVolumeCallback methods, not IUnknown,
+        // so QI for the specific IID before handing the pointer to native — passing the
+        // raw IUnknown pointer dispatches against the wrong vtable and access-violates on
+        // the worker thread.
+        private static IntPtr QueryCallbackInterface(AudioEndpointVolumeCallback callback)
+        {
+            var unknownPtr = ComActivation.ComWrappers.GetOrCreateComInterfaceForObject(callback, CreateComInterfaceFlags.None);
+            try
+            {
+                Marshal.ThrowExceptionForHR(Marshal.QueryInterface(unknownPtr, in IID_IAudioEndpointVolumeCallback, out var ifacePtr));
+                return ifacePtr;
+            }
+            finally
+            {
+                Marshal.Release(unknownPtr);
+            }
+        }
+
         #region IDisposable Members
 
         /// <summary>
@@ -162,19 +197,28 @@ namespace NAudio.CoreAudioApi
         {
             if (callBack != null)
             {
-                Marshal.ThrowExceptionForHR(audioEndPointVolume.UnregisterControlChangeNotify(callBack));
+                var callBackPtr = QueryCallbackInterface(callBack);
+                try
+                {
+                    audioEndPointVolume.UnregisterControlChangeNotify(callBackPtr);
+                }
+                finally
+                {
+                    Marshal.Release(callBackPtr);
+                }
                 callBack = null;
             }
-            Marshal.ReleaseComObject(audioEndPointVolume);
+            // Deterministic release is important: in exclusive mode the device cannot be
+            // re-opened until all COM references are released.
+            if (audioEndPointVolume != null)
+            {
+                if ((object)audioEndPointVolume is ComObject co)
+                {
+                    co.FinalRelease();
+                }
+                audioEndPointVolume = null;
+            }
             GC.SuppressFinalize(this);
-        }
-        
-        /// <summary>
-        /// Finalizer
-        /// </summary>
-        ~AudioEndpointVolume()
-        {
-            Dispose();
         }
 
         #endregion

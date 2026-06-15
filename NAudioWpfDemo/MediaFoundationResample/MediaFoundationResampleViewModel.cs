@@ -102,7 +102,7 @@ namespace NAudioWpfDemo.MediaFoundationResample
         private void SelectInputFile()
         {
             var ofd = new OpenFileDialog();
-            ofd.Filter = "Audio files|*.mp3;*.wav;*.wma;*.aiff;*.aac";
+            ofd.Filter = "Audio files|*.mp3;*.wav;*.wma;*.aiff;*.aac;*.mp4;*.m4a;*.flac;*.opus;*.ogg;*.mka;*.webm";
             if (ofd.ShowDialog() == true)
             {
                 if (TryOpenInputFile(ofd.FileName))
@@ -212,7 +212,7 @@ namespace NAudioWpfDemo.MediaFoundationResample
                 // read three and a half seconds (half a second is to ensure Resampler has some leftovers to drain)
                 for (int n = 0; n < 7; n++)
                 {
-                    var read = source.Read(buffer, 0, buffer.Length);
+                    var read = source.Read(buffer.AsSpan());
                     writer.Write(buffer, 0, read);
                 }
                 Array.Clear(buffer, 0, buffer.Length);
@@ -226,7 +226,7 @@ namespace NAudioWpfDemo.MediaFoundationResample
                 // now read some more out
                 for (int n = 0; n < 6; n++)
                 {
-                    var read = source.Read(buffer, 0, buffer.Length);
+                    var read = source.Read(buffer.AsSpan());
                     writer.Write(buffer, 0, read);
                 }
             }

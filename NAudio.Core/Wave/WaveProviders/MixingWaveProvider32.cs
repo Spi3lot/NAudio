@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 
 namespace NAudio.Wave
 {
@@ -34,7 +35,7 @@ namespace NAudio.Wave
             : this()
         {
             if (inputs == null)
-                throw new ArgumentNullException("inputs");
+                throw new ArgumentNullException(nameof(inputs));
 
             foreach (var input in inputs)
             {
@@ -49,13 +50,13 @@ namespace NAudio.Wave
         public void AddInputStream(IWaveProvider waveProvider)
         {
             if (waveProvider == null)
-                throw new ArgumentNullException("waveProvider");
+                throw new ArgumentNullException(nameof(waveProvider));
 
             var inputFormat = waveProvider.WaveFormat;
             if (inputFormat.Encoding != WaveFormatEncoding.IeeeFloat)
-                throw new ArgumentException("Must be IEEE floating point", "waveProvider.WaveFormat");
+                throw new ArgumentException("Must be IEEE floating point", nameof(waveProvider));
             if (inputFormat.BitsPerSample != 32)
-                throw new ArgumentException("Only 32 bit audio currently supported", "waveProvider.WaveFormat");
+                throw new ArgumentException("Only 32 bit audio currently supported", nameof(waveProvider));
 
             lock (inputs)
             {
@@ -69,7 +70,7 @@ namespace NAudio.Wave
                 else
                 {
                     if (!inputFormat.Equals(waveFormat))
-                        throw new ArgumentException("All incoming channels must have the same format", "waveProvider.WaveFormat");
+                        throw new ArgumentException("All incoming channels must have the same format", nameof(waveProvider));
                 }
 
                 this.inputs.Add(waveProvider);
@@ -100,33 +101,29 @@ namespace NAudio.Wave
         /// Reads bytes from this wave stream
         /// </summary>
         /// <param name="buffer">buffer to read into</param>
-        /// <param name="offset">offset into buffer</param>
-        /// <param name="count">number of bytes required</param>
         /// <returns>Number of bytes read.</returns>
         /// <exception cref="ArgumentException">Thrown if an invalid number of bytes requested</exception>
-        public int Read(byte[] buffer, int offset, int count)
+        public int Read(Span<byte> buffer)
         {
-            if (offset % bytesPerSample != 0)
-                throw new ArgumentException("Offset must be on a sample boundary", "offset");
-            if (count % bytesPerSample != 0)
-                throw new ArgumentException("Must read an whole number of samples", "count");
+            if (buffer.Length % bytesPerSample != 0)
+                throw new ArgumentException("Must read a whole number of samples", nameof(buffer));
 
             // blank the buffer
-            Array.Clear(buffer, offset, count);
+            buffer.Clear();
             int bytesRead = 0;
 
             // sum the channels in
-            byte[] readBuffer = new byte[count];
+            byte[] readBuffer = new byte[buffer.Length];
             lock (inputs)
             {
                 foreach (var input in inputs)
                 {
-                    int readFromThisStream = input.Read(readBuffer, 0, count);
+                    int readFromThisStream = input.Read(readBuffer.AsSpan(0, buffer.Length));
                     // don't worry if input stream returns less than we requested - may indicate we have got to the end
                     bytesRead = Math.Max(bytesRead, readFromThisStream);
                     if (readFromThisStream > 0)
                     {
-                        Sum32BitAudio(buffer, offset, readBuffer, readFromThisStream);
+                        Sum32BitAudio(buffer, readBuffer, readFromThisStream);
                     }
                 }
             }
@@ -136,18 +133,14 @@ namespace NAudio.Wave
         /// <summary>
         /// Actually performs the mixing
         /// </summary>
-        static unsafe void Sum32BitAudio(byte[] destBuffer, int offset, byte[] sourceBuffer, int bytesRead)
+        static void Sum32BitAudio(Span<byte> destBuffer, byte[] sourceBuffer, int bytesRead)
         {
-            fixed (byte* pDestBuffer = &destBuffer[offset],
-                      pSourceBuffer = &sourceBuffer[0])
+            var destFloats = MemoryMarshal.Cast<byte, float>(destBuffer);
+            var sourceFloats = MemoryMarshal.Cast<byte, float>(sourceBuffer.AsSpan(0, bytesRead));
+            int samplesRead = bytesRead / 4;
+            for (int n = 0; n < samplesRead; n++)
             {
-                float* pfDestBuffer = (float*)pDestBuffer;
-                float* pfReadBuffer = (float*)pSourceBuffer;
-                int samplesRead = bytesRead / 4;
-                for (int n = 0; n < samplesRead; n++)
-                {
-                    pfDestBuffer[n] += pfReadBuffer[n];
-                }
+                destFloats[n] += sourceFloats[n];
             }
         }
 

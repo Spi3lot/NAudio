@@ -1,42 +1,74 @@
-﻿using System;
+using System;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 
 namespace NAudio.CoreAudioApi.Interfaces
 {
     /// <summary>
+    /// Windows CoreAudio IAudioClient2 interface
     /// https://docs.microsoft.com/en-us/windows/win32/api/audioclient/nn-audioclient-iaudioclient2
     /// </summary>
-    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("726778CD-F60A-4eda-82DE-E47610CD78AA")]
-    public interface IAudioClient2 : IAudioClient
+    [GeneratedComInterface]
+    [Guid("726778CD-F60A-4eda-82DE-E47610CD78AA")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal partial interface IAudioClient2
     {
-        //virtual HRESULT STDMETHODCALLTYPE IsOffloadCapable(/*[in]*/ _In_  
-        //   AUDIO_STREAM_CATEGORY Category, /*[in]*/ _Out_  BOOL *pbOffloadCapable) = 0;
-        /// <summary>
-        /// The IsOffloadCapable method retrieves information about whether or not the endpoint on which a stream is created is capable of supporting an offloaded audio stream.
-        /// </summary>
-        /// <param name="category">An enumeration that specifies the category of an audio stream.</param>
-        /// <param name="pbOffloadCapable">A pointer to a Boolean value. TRUE indicates that the endpoint is offload-capable. FALSE indicates that the endpoint is not offload-capable.</param>
-        void IsOffloadCapable(AudioStreamCategory category, out bool pbOffloadCapable);
-        //virtual HRESULT STDMETHODCALLTYPE SetClientProperties(/*[in]*/ _In_  
-        //  const AudioClientProperties *pProperties) = 0;
-        /// <summary>
-        /// Pointer to an AudioClientProperties structure.
-        /// </summary>
-        /// <param name="pProperties"></param>
-        void SetClientProperties([In] IntPtr pProperties);
-        // TODO: try this: void SetClientProperties([In, MarshalAs(UnmanagedType.LPStruct)] AudioClientProperties pProperties);
-        //virtual HRESULT STDMETHODCALLTYPE GetBufferSizeLimits(/*[in]*/ _In_  
-        //   const WAVEFORMATEX *pFormat, /*[in]*/ _In_  BOOL bEventDriven, /*[in]*/ 
-        //  _Out_  REFERENCE_TIME *phnsMinBufferDuration, /*[in]*/ _Out_  
-        //  REFERENCE_TIME *phnsMaxBufferDuration) = 0;
-        /// <summary>
-        /// The GetBufferSizeLimits method returns the buffer size limits of the hardware audio engine in 100-nanosecond units.
-        /// </summary>
-        /// <param name="pFormat">A pointer to the target format that is being queried for the buffer size limit.</param>
-        /// <param name="bEventDriven">Boolean value to indicate whether or not the stream can be event-driven.</param>
-        /// <param name="phnsMinBufferDuration">Returns a pointer to the minimum buffer size (in 100-nanosecond units) that is required for the underlying hardware audio engine to operate at the format specified in the pFormat parameter, without frequent audio glitching.</param>
-        /// <param name="phnsMaxBufferDuration">Returns a pointer to the maximum buffer size (in 100-nanosecond units) that the underlying hardware audio engine can support for the format specified in the pFormat parameter.</param>
-        void GetBufferSizeLimits(IntPtr pFormat, bool bEventDriven,
-                                 out long phnsMinBufferDuration, out long phnsMaxBufferDuration);
+        // ---- IAudioClient methods (must redeclare in vtable order) ----
+
+        [PreserveSig]
+        int Initialize(AudioClientShareMode shareMode,
+            AudioClientStreamFlags streamFlags,
+            long hnsBufferDuration,
+            long hnsPeriodicity,
+            IntPtr pFormat,
+            in Guid audioSessionGuid);
+
+        [PreserveSig]
+        int GetBufferSize(out uint bufferSize);
+
+        [PreserveSig]
+        int GetStreamLatency(out long latency);
+
+        [PreserveSig]
+        int GetCurrentPadding(out int currentPadding);
+
+        [PreserveSig]
+        int IsFormatSupported(
+            AudioClientShareMode shareMode,
+            IntPtr pFormat,
+            out IntPtr closestMatchFormat);
+
+        [PreserveSig]
+        int GetMixFormat(out IntPtr deviceFormatPointer);
+
+        [PreserveSig]
+        int GetDevicePeriod(out long defaultDevicePeriod, out long minimumDevicePeriod);
+
+        [PreserveSig]
+        int Start();
+
+        [PreserveSig]
+        int Stop();
+
+        [PreserveSig]
+        int Reset();
+
+        [PreserveSig]
+        int SetEventHandle(IntPtr eventHandle);
+
+        [PreserveSig]
+        int GetService(in Guid interfaceId, out IntPtr interfacePointer);
+
+        // ---- IAudioClient2-specific methods ----
+
+        [PreserveSig]
+        int IsOffloadCapable(AudioStreamCategory category, out int pbOffloadCapable);
+
+        [PreserveSig]
+        int SetClientProperties(IntPtr pProperties);
+
+        [PreserveSig]
+        int GetBufferSizeLimits(IntPtr pFormat, [MarshalAs(UnmanagedType.Bool)] bool bEventDriven,
+            out long phnsMinBufferDuration, out long phnsMaxBufferDuration);
     }
 }

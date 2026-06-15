@@ -1,4 +1,6 @@
 ﻿using NAudio.CoreAudioApi.Interfaces;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 
 namespace NAudio.CoreAudioApi
 {
@@ -19,7 +21,16 @@ namespace NAudio.CoreAudioApi
         /// </summary>
         public void ConnectTo(Connector other)
         {
-            connectorInterface.ConnectTo(other.connectorInterface);
+            var ptr = ComActivation.ComWrappers.GetOrCreateComInterfaceForObject(
+                other.connectorInterface, CreateComInterfaceFlags.None);
+            try
+            {
+                connectorInterface.ConnectTo(ptr);
+            }
+            finally
+            {
+                Marshal.Release(ptr);
+            }
         }
 
         /// <summary>
@@ -73,8 +84,16 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                connectorInterface.GetConnectedTo(out var result);
-                return new Connector(result);
+                connectorInterface.GetConnectedTo(out var ptr);
+                try
+                {
+                    return new Connector((IConnector)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                        ptr, CreateObjectFlags.UniqueInstance));
+                }
+                finally
+                {
+                    Marshal.Release(ptr);
+                }
             }
         }
 

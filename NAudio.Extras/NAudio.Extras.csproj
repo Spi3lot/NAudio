@@ -1,22 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>net472;netcoreapp3.1;net8.0-windows;net8.0</TargetFrameworks>
-    <SignAssembly>true</SignAssembly>
-    <AssemblyOriginatorKeyFile>..\NAudioStrongNameKey.snk</AssemblyOriginatorKeyFile>
-    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <!-- DocFX's metadata step cannot load a multi-targeted project (it reads the
+         reference-less outer build), so collapse to the net9.0 surface when the docs
+         site is being generated. This lets every project sit in one DocFX metadata
+         block, which is what keeps the API table-of-contents unified. -->
+    <TargetFrameworks Condition=" '$(DocsBuild)' != 'true' ">net9.0;net9.0-windows10.0.19041.0</TargetFrameworks>
+    <TargetFramework Condition=" '$(DocsBuild)' == 'true' ">net9.0</TargetFramework>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <Authors>Mark Heath</Authors>
-    <PackageProjectUrl>https://github.com/naudio/NAudio</PackageProjectUrl>
-    <PackageTags>C# .NET audio sound</PackageTags>
-    <RepositoryUrl>https://github.com/naudio/NAudio</RepositoryUrl>
-    <Copyright>© Mark Heath 2026</Copyright>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <Version>2.3.0</Version>
-    <PackageIcon>naudio-icon.png</PackageIcon>
+    <Description>Optional extras (extra demo/sample providers and helpers) for the NAudio audio library.</Description>
   </PropertyGroup>
 
-  <PropertyGroup Condition=" '$(TargetFramework)' != 'net8.0' ">
+  <PropertyGroup Condition=" '$(TargetPlatformIdentifier)' == 'windows' ">
     <DefineConstants>$(DefineConstants);WINDOWS</DefineConstants>
   </PropertyGroup>
 
@@ -24,15 +19,8 @@
     <ProjectReference Include="..\NAudio.Core\NAudio.Core.csproj" />
     <ProjectReference Include="..\NAudio\NAudio.csproj" />
   </ItemGroup>
-  <ItemGroup Condition=" '$(TargetFramework)' != 'net8.0' ">
+  <ItemGroup Condition=" $([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net9.0-windows10.0.19041.0')) ">
     <ProjectReference Include="..\NAudio.Wasapi\NAudio.Wasapi.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Include="..\naudio-icon.png">
-      <Pack>True</Pack>
-      <PackagePath></PackagePath>
-    </None>
   </ItemGroup>
 
 </Project>

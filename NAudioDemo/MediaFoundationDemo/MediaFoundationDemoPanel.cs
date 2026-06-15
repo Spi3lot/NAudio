@@ -49,6 +49,7 @@ namespace NAudioDemo.MediaFoundationDemo
             }
 
             var ofd = new OpenFileDialog();
+            ofd.Filter = "Audio Files|*.mp3;*.wav;*.aiff;*.wma;*.aac;*.mp4;*.m4a;*.flac;*.opus;*.ogg;*.mka;*.webm|All Files|*.*";
             if (ofd.ShowDialog() != DialogResult.OK) return;
 
             if (reader != null)
@@ -84,7 +85,7 @@ namespace NAudioDemo.MediaFoundationDemo
             {
                 if (radioButtonWasapi.Checked)
                 {
-                    wavePlayer = new WasapiOutGuiThread();
+                    wavePlayer = new WasapiPlayerGuiThread();
                 }
                 else
                 {

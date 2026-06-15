@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using NAudio.Utils;
@@ -26,7 +26,7 @@ namespace NAudio.Wave
         /// <param name="inputs">Input wave providers. Must all be of the same format, but can have any number of channels</param>
         public MultiplexingWaveProvider(IEnumerable<IWaveProvider> inputs) : this(inputs, -1)
         {
-            
+
         }
 
         /// <summary>
@@ -38,7 +38,7 @@ namespace NAudio.Wave
         public MultiplexingWaveProvider(IEnumerable<IWaveProvider> inputs, int numberOfOutputChannels)
         {
             this.inputs = new List<IWaveProvider>(inputs);
-            
+
             outputChannelCount = numberOfOutputChannels == -1 ? this.inputs.Sum(i => i.WaveFormat.Channels)  : numberOfOutputChannels;
 
             if (this.inputs.Count == 0)
@@ -97,13 +97,11 @@ namespace NAudio.Wave
         /// Reads data from this WaveProvider
         /// </summary>
         /// <param name="buffer">Buffer to be filled with sample data</param>
-        /// <param name="offset">Offset to write to within buffer, usually 0</param>
-        /// <param name="count">Number of bytes required</param>
         /// <returns>Number of bytes read</returns>
-        public int Read(byte[] buffer, int offset, int count)
+        public int Read(Span<byte> buffer)
         {
             int outputBytesPerFrame = bytesPerSample * outputChannelCount;
-            int sampleFramesRequested = count / outputBytesPerFrame;
+            int sampleFramesRequested = buffer.Length / outputBytesPerFrame;
             int inputOffset = 0;
             int sampleFramesRead = 0;
             // now we must read from all inputs, even if we don't need their data, so they stay in sync
@@ -112,7 +110,7 @@ namespace NAudio.Wave
                 int inputBytesPerFrame = bytesPerSample * input.WaveFormat.Channels;
                 int bytesRequired = sampleFramesRequested * inputBytesPerFrame;
                 inputBuffer = BufferHelpers.Ensure(inputBuffer, bytesRequired);
-                int bytesRead = input.Read(inputBuffer, 0, bytesRequired);
+                int bytesRead = input.Read(inputBuffer.AsSpan(0, bytesRequired));
                 sampleFramesRead = Math.Max(sampleFramesRead, bytesRead / inputBytesPerFrame);
 
                 for (int n = 0; n < input.WaveFormat.Channels; n++)
@@ -123,11 +121,11 @@ namespace NAudio.Wave
                         if (mappings[outputIndex] == inputIndex)
                         {
                             int inputBufferOffset = n * bytesPerSample;
-                            int outputBufferOffset = offset + outputIndex * bytesPerSample;
+                            int outputBufferOffset = outputIndex * bytesPerSample;
                             int sample = 0;
                             while (sample < sampleFramesRequested && inputBufferOffset < bytesRead)
                             {
-                                Array.Copy(inputBuffer, inputBufferOffset, buffer, outputBufferOffset, bytesPerSample);
+                                inputBuffer.AsSpan(inputBufferOffset, bytesPerSample).CopyTo(buffer.Slice(outputBufferOffset, bytesPerSample));
                                 outputBufferOffset += outputBytesPerFrame;
                                 inputBufferOffset += inputBytesPerFrame;
                                 sample++;
@@ -135,7 +133,7 @@ namespace NAudio.Wave
                             // clear the end
                             while (sample < sampleFramesRequested)
                             {
-                                Array.Clear(buffer, outputBufferOffset, bytesPerSample);
+                                buffer.Slice(outputBufferOffset, bytesPerSample).Clear();
                                 outputBufferOffset += outputBytesPerFrame;
                                 sample++;
                             }

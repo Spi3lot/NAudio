@@ -5,6 +5,7 @@
 
 using System;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using NAudio.CoreAudioApi.Interfaces;
 
 namespace NAudio.CoreAudioApi
@@ -17,10 +18,29 @@ namespace NAudio.CoreAudioApi
     /// </summary>
     public class AudioSessionManager : IDisposable
     {
-        private readonly IAudioSessionManager audioSessionInterface;
-        private readonly IAudioSessionManager2 audioSessionInterface2;
+        private static readonly Guid IID_IAudioSessionNotification = new Guid("641DD20B-4D41-49CC-ABA3-174B9477BB08");
+
+        private IAudioSessionManager audioSessionInterface;
+        private IAudioSessionManager2 audioSessionInterface2;
         private AudioSessionNotification audioSessionNotification;
         private SessionCollection sessions;
+
+        // ComWrappers CCWs return a distinct IntPtr per interface (and a separate vtable
+        // for IUnknown). RegisterSessionNotification expects an IAudioSessionNotification*,
+        // so QI for the specific IID instead of passing the IUnknown CCW pointer directly.
+        private static IntPtr QueryNotificationInterface(AudioSessionNotification callback)
+        {
+            var unknownPtr = ComActivation.ComWrappers.GetOrCreateComInterfaceForObject(callback, CreateComInterfaceFlags.None);
+            try
+            {
+                Marshal.ThrowExceptionForHR(Marshal.QueryInterface(unknownPtr, in IID_IAudioSessionNotification, out var ifacePtr));
+                return ifacePtr;
+            }
+            finally
+            {
+                Marshal.Release(unknownPtr);
+            }
+        }
 
         private SimpleAudioVolume simpleAudioVolume;
         private AudioSessionControl audioSessionControl;
@@ -28,17 +48,29 @@ namespace NAudio.CoreAudioApi
         /// <summary>
         /// Session created delegate
         /// </summary>
-        public delegate void SessionCreatedDelegate(object sender, IAudioSessionControl newSession);
-        
+        public delegate void SessionCreatedDelegate(object sender, AudioSessionControl newSession);
+
         /// <summary>
         /// Occurs when audio session has been added (for example run another program that use audio playback).
         /// </summary>
         public event SessionCreatedDelegate OnSessionCreated;
 
-        internal AudioSessionManager(IAudioSessionManager audioSessionManager)
+        /// <summary>
+        /// Creates a new AudioSessionManager — ownership of the COM pointer is transferred.
+        /// </summary>
+        /// <param name="nativePointer">Raw COM pointer — ownership is transferred to this instance</param>
+        internal AudioSessionManager(IntPtr nativePointer)
         {
-            audioSessionInterface = audioSessionManager;
-            audioSessionInterface2 = audioSessionManager as IAudioSessionManager2;
+            try
+            {
+                audioSessionInterface = (IAudioSessionManager)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                    nativePointer, CreateObjectFlags.UniqueInstance);
+            }
+            finally
+            {
+                Marshal.Release(nativePointer);
+            }
+            audioSessionInterface2 = audioSessionInterface as IAudioSessionManager2;
 
             RefreshSessions();
         }
@@ -53,9 +85,8 @@ namespace NAudio.CoreAudioApi
             {
                 if (simpleAudioVolume == null)
                 {
-                    audioSessionInterface.GetSimpleAudioVolume(Guid.Empty, 0, out var simpleAudioInterface);
-
-                    simpleAudioVolume = new SimpleAudioVolume(simpleAudioInterface);
+                    CoreAudioException.ThrowIfFailed(audioSessionInterface.GetSimpleAudioVolume(Guid.Empty, 0, out var ptr));
+                    simpleAudioVolume = new SimpleAudioVolume(ptr);
                 }
                 return simpleAudioVolume;
             }
@@ -71,9 +102,8 @@ namespace NAudio.CoreAudioApi
             {
                 if (audioSessionControl == null)
                 {
-                    audioSessionInterface.GetAudioSessionControl(Guid.Empty, 0, out var audioSessionControlInterface);
-
-                    audioSessionControl = new AudioSessionControl(audioSessionControlInterface);
+                    CoreAudioException.ThrowIfFailed(audioSessionInterface.GetAudioSessionControl(Guid.Empty, 0, out var ptr));
+                    audioSessionControl = new AudioSessionControl(ptr);
                 }
                 return audioSessionControl;
             }
@@ -81,7 +111,7 @@ namespace NAudio.CoreAudioApi
 
         internal void FireSessionCreated(IAudioSessionControl newSession)
         {
-            OnSessionCreated?.Invoke(this, newSession);
+            OnSessionCreated?.Invoke(this, new AudioSessionControl(newSession));
         }
 
         /// <summary>
@@ -93,11 +123,19 @@ namespace NAudio.CoreAudioApi
 
             if (audioSessionInterface2 != null)
             {
-                Marshal.ThrowExceptionForHR(audioSessionInterface2.GetSessionEnumerator(out var sessionEnum));
-                sessions = new SessionCollection(sessionEnum);
+                CoreAudioException.ThrowIfFailed(audioSessionInterface2.GetSessionEnumerator(out var sessionEnumPtr));
+                sessions = new SessionCollection(sessionEnumPtr);
 
                 audioSessionNotification = new AudioSessionNotification(this);
-                Marshal.ThrowExceptionForHR(audioSessionInterface2.RegisterSessionNotification(audioSessionNotification));
+                var notificationPtr = QueryNotificationInterface(audioSessionNotification);
+                try
+                {
+                    CoreAudioException.ThrowIfFailed(audioSessionInterface2.RegisterSessionNotification(notificationPtr));
+                }
+                finally
+                {
+                    Marshal.Release(notificationPtr);
+                }
             }
         }
 
@@ -111,28 +149,41 @@ namespace NAudio.CoreAudioApi
         /// </summary>
         public void Dispose()
         {
-            GC.SuppressFinalize(this);
             UnregisterNotifications();
+            simpleAudioVolume?.Dispose();
+            simpleAudioVolume = null;
+            audioSessionControl?.Dispose();
+            audioSessionControl = null;
+            if (audioSessionInterface != null)
+            {
+                if ((object)audioSessionInterface is ComObject co)
+                {
+                    co.FinalRelease();
+                }
+                audioSessionInterface = null;
+                audioSessionInterface2 = null;
+            }
+            GC.SuppressFinalize(this);
         }
 
         private void UnregisterNotifications()
         {
+            sessions?.Dispose();
             sessions = null;
 
             if (audioSessionNotification != null && audioSessionInterface2 != null)
             {
-                Marshal.ThrowExceptionForHR(
-                    audioSessionInterface2.UnregisterSessionNotification(audioSessionNotification));
+                var notificationPtr = QueryNotificationInterface(audioSessionNotification);
+                try
+                {
+                    audioSessionInterface2.UnregisterSessionNotification(notificationPtr);
+                }
+                finally
+                {
+                    Marshal.Release(notificationPtr);
+                }
                 audioSessionNotification = null;
             }
-        }
-
-        /// <summary>
-        /// Finalizer.
-        /// </summary>
-        ~AudioSessionManager()
-        {
-            Dispose();
         }
     }
 }

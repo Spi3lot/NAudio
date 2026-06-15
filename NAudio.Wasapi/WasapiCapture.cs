@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Threading;
 using System.Runtime.InteropServices;
+using NAudio.Utils;
 using NAudio.Wave;
 
 // for consistency this should be in NAudio.Wave namespace, but left as it is for backwards compatibility
@@ -11,12 +12,12 @@ namespace NAudio.CoreAudioApi
     /// Audio Capture using Wasapi
     /// See http://msdn.microsoft.com/en-us/library/dd370800%28VS.85%29.aspx
     /// </summary>
+    [Obsolete("Use WasapiRecorderBuilder to create a WasapiRecorder instead. WasapiRecorder provides zero-copy buffers, MMCSS thread priority, IAsyncEnumerable capture, and process-specific loopback.")]
     public class WasapiCapture : IWaveIn
     {
         private const long ReftimesPerSec = 10000000;
         private const long ReftimesPerMillisec = 10000;
         private volatile CaptureState captureState;
-        private byte[] recordBuffer;
         private Thread captureThread;
         private AudioClient audioClient;
         private int bytesPerFrame;
@@ -74,7 +75,7 @@ namespace NAudio.CoreAudioApi
         public WasapiCapture(MMDevice captureDevice, bool useEventSync, int audioBufferMillisecondsLength)
         {
             syncContext = SynchronizationContext.Current;
-            audioClient = captureDevice.AudioClient;
+            audioClient = captureDevice.CreateAudioClient();
             ShareMode = AudioClientShareMode.Shared;
             isUsingEventSync = useEventSync;
             this.audioBufferMillisecondsLength = audioBufferMillisecondsLength;
@@ -163,11 +164,7 @@ namespace NAudio.CoreAudioApi
                 Guid.Empty);
             }
 
-            int bufferFrameCount = audioClient.BufferSize;
             bytesPerFrame = waveFormat.Channels * waveFormat.BitsPerSample / 8;
-            recordBuffer = new byte[bufferFrameCount * bytesPerFrame];
-            
-            //Debug.WriteLine(string.Format("record buffer size = {0}", this.recordBuffer.Length));
 
             initialized = true;
         }
@@ -202,6 +199,7 @@ namespace NAudio.CoreAudioApi
             captureThread = new Thread(() => CaptureThread(audioClient))
             {
                 IsBackground = true,
+                Name = "NAudio WasapiCapture Recording",
             };
             captureThread.Start();
         }
@@ -288,39 +286,37 @@ namespace NAudio.CoreAudioApi
 
         private void ReadNextPacket(AudioCaptureClient capture)
         {
+            // Fires one DataAvailable event per WASAPI packet, each with its own fresh
+            // managed byte[]. Reusing a single buffer across packets is unsafe: loopback
+            // capture commonly drains several packets per wake-up (the render engine
+            // bursts), and a consumer that defers handling (Control.BeginInvoke,
+            // queueing to another thread) would read whichever packet happened to be in
+            // the shared buffer when the handler eventually ran. Per-packet allocations
+            // are a few hundred bytes each and collect in gen0 — a lot cheaper than
+            // garbled audio. Zero-copy capture is available via WasapiRecorder.
             int packetSize = capture.GetNextPacketSize();
-            int recordBufferOffset = 0;
-            //Debug.WriteLine(string.Format("packet size: {0} samples", packetSize / 4));
-
             while (packetSize != 0)
             {
                 IntPtr buffer = capture.GetBuffer(out int framesAvailable, out AudioClientBufferFlags flags);
-
                 int bytesAvailable = framesAvailable * bytesPerFrame;
 
-                // apparently it is sometimes possible to read more frames than we were expecting?
-                // fix suggested by Michael Feld:
-                int spaceRemaining = Math.Max(0, recordBuffer.Length - recordBufferOffset);
-                if (spaceRemaining < bytesAvailable && recordBufferOffset > 0)
+                try
                 {
-                    DataAvailable?.Invoke(this, new WaveInEventArgs(recordBuffer, recordBufferOffset));
-                    recordBufferOffset = 0;
+                    var packetBuffer = new byte[bytesAvailable];
+                    if ((flags & AudioClientBufferFlags.Silent) != AudioClientBufferFlags.Silent)
+                    {
+                        Marshal.Copy(buffer, packetBuffer, 0, bytesAvailable);
+                    }
+                    // Silent packets: packetBuffer is already zero-initialised.
+                    DataAvailable?.Invoke(this, new WaveInEventArgs(packetBuffer, bytesAvailable));
+                }
+                finally
+                {
+                    capture.ReleaseBuffer(framesAvailable);
                 }
 
-                // if not silence...
-                if ((flags & AudioClientBufferFlags.Silent) != AudioClientBufferFlags.Silent)
-                {
-                    Marshal.Copy(buffer, recordBuffer, recordBufferOffset, bytesAvailable);
-                }
-                else
-                {
-                    Array.Clear(recordBuffer, recordBufferOffset, bytesAvailable);
-                }
-                recordBufferOffset += bytesAvailable;
-                capture.ReleaseBuffer(framesAvailable);
                 packetSize = capture.GetNextPacketSize();
             }
-            DataAvailable?.Invoke(this, new WaveInEventArgs(recordBuffer, recordBufferOffset));
         }
 
         /// <summary>

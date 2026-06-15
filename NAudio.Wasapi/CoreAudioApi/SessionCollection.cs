@@ -2,19 +2,32 @@
 using System;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 
 namespace NAudio.CoreAudioApi
 {
     /// <summary>
     /// Collection of sessions.
     /// </summary>
-    public class SessionCollection
+    public class SessionCollection : IDisposable
     {
-        readonly IAudioSessionEnumerator audioSessionEnumerator;
+        private IAudioSessionEnumerator audioSessionEnumerator;
 
-        internal SessionCollection(IAudioSessionEnumerator realEnumerator)
+        /// <summary>
+        /// Creates a new SessionCollection — ownership of the COM pointer is transferred.
+        /// </summary>
+        /// <param name="nativePointer">Raw COM pointer — ownership is transferred to this instance</param>
+        internal SessionCollection(IntPtr nativePointer)
         {
-            audioSessionEnumerator = realEnumerator;
+            try
+            {
+                audioSessionEnumerator = (IAudioSessionEnumerator)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                    nativePointer, CreateObjectFlags.UniqueInstance);
+            }
+            finally
+            {
+                Marshal.Release(nativePointer);
+            }
         }
 
         /// <summary>
@@ -26,8 +39,8 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(audioSessionEnumerator.GetSession(index, out var result));
-                return new AudioSessionControl(result);
+                CoreAudioException.ThrowIfFailed(audioSessionEnumerator.GetSession(index, out var ptr));
+                return new AudioSessionControl(ptr);
             }
         }
 
@@ -38,9 +51,25 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(audioSessionEnumerator.GetCount(out var result));
+                CoreAudioException.ThrowIfFailed(audioSessionEnumerator.GetCount(out var result));
                 return result;
             }
+        }
+
+        /// <summary>
+        /// Dispose
+        /// </summary>
+        public void Dispose()
+        {
+            if (audioSessionEnumerator != null)
+            {
+                if ((object)audioSessionEnumerator is ComObject co)
+                {
+                    co.FinalRelease();
+                }
+                audioSessionEnumerator = null;
+            }
+            GC.SuppressFinalize(this);
         }
     }
 }

@@ -1,40 +1,20 @@
-﻿/*
-  LICENSE
-  -------
-  Copyright (C) 2007 Ray Molenkamp
-
-  This source code is provided 'as-is', without any express or implied
-  warranty.  In no event will the authors be held liable for any damages
-  arising from the use of this source code or the software it produces.
-
-  Permission is granted to anyone to use this source code for any purpose,
-  including commercial applications, and to alter it and redistribute it
-  freely, subject to the following restrictions:
-
-  1. The origin of this source code must not be misrepresented; you must not
-     claim that you wrote the original source code.  If you use this source code
-     in a product, an acknowledgment in the product documentation would be
-     appreciated but is not required.
-  2. Altered source versions must be plainly marked as such, and must not be
-     misrepresented as being the original source code.
-  3. This notice may not be removed or altered from any source distribution.
-*/
-// modified for NAudio
-// milligan22963 - updated to include audio session manager
-
-using System;
+﻿using System;
 using NAudio.CoreAudioApi.Interfaces;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 
 namespace NAudio.CoreAudioApi
 {
     /// <summary>
-    /// MM Device
+    /// A single Core Audio endpoint (<c>IMMDevice</c>) — render or capture, and one of
+    /// the four <see cref="DeviceState"/> values. Provides access to the property store,
+    /// session manager, endpoint volume, peak meter, device topology, and audio clients.
+    /// Obtain instances from <see cref="MMDeviceEnumerator"/>.
     /// </summary>
     public class MMDevice : IDisposable
     {
         #region Variables
-        private readonly IMMDevice deviceInterface;
+        private IMMDevice deviceInterface;
         private PropertyStore propertyStore;
         private AudioMeterInformation audioMeterInformation;
         private AudioEndpointVolume audioEndpointVolume;
@@ -60,38 +40,62 @@ namespace NAudio.CoreAudioApi
         /// <remarks>Administrative client is required for Write and ReadWrite modes.</remarks>
         public void GetPropertyInformation(StorageAccessMode stgmAccess = StorageAccessMode.Read)
         {
-            Marshal.ThrowExceptionForHR(deviceInterface.OpenPropertyStore(stgmAccess, out var propstore));
-            propertyStore = new PropertyStore(propstore);
+            CoreAudioException.ThrowIfFailed(deviceInterface.OpenPropertyStore(stgmAccess, out var ptr));
+            try
+            {
+                propertyStore = new PropertyStore((IPropertyStore)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                    ptr, CreateObjectFlags.UniqueInstance));
+            }
+            finally
+            {
+                Marshal.Release(ptr);
+            }
         }
 
         private AudioClient GetAudioClient()
         {
-            Marshal.ThrowExceptionForHR(deviceInterface.Activate(IID_IAudioClient, ClsCtx.ALL, IntPtr.Zero, out var result));
-            return new AudioClient(result as IAudioClient);
+            CoreAudioException.ThrowIfFailed(deviceInterface.Activate(IID_IAudioClient, ClsCtx.ALL, IntPtr.Zero, out var ptr));
+            try
+            {
+                return new AudioClient((IAudioClient)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                    ptr, CreateObjectFlags.UniqueInstance));
+            }
+            finally
+            {
+                Marshal.Release(ptr);
+            }
         }
 
         private void GetAudioMeterInformation()
         {
-            Marshal.ThrowExceptionForHR(deviceInterface.Activate(IID_IAudioMeterInformation, ClsCtx.ALL, IntPtr.Zero, out var result));
-            audioMeterInformation = new AudioMeterInformation(result as IAudioMeterInformation);
+            CoreAudioException.ThrowIfFailed(deviceInterface.Activate(IID_IAudioMeterInformation, ClsCtx.ALL, IntPtr.Zero, out var ptr));
+            audioMeterInformation = new AudioMeterInformation(ptr);
         }
 
         private void GetAudioEndpointVolume()
         {
-            Marshal.ThrowExceptionForHR(deviceInterface.Activate(IID_IAudioEndpointVolume, ClsCtx.ALL, IntPtr.Zero, out var result));
-            audioEndpointVolume = new AudioEndpointVolume(result as IAudioEndpointVolume);
+            CoreAudioException.ThrowIfFailed(deviceInterface.Activate(IID_IAudioEndpointVolume, ClsCtx.ALL, IntPtr.Zero, out var ptr));
+            audioEndpointVolume = new AudioEndpointVolume(ptr);
         }
 
         private void GetAudioSessionManager()
         {
-            Marshal.ThrowExceptionForHR(deviceInterface.Activate(IDD_IAudioSessionManager, ClsCtx.ALL, IntPtr.Zero, out var result));
-            audioSessionManager = new AudioSessionManager(result as IAudioSessionManager);
+            CoreAudioException.ThrowIfFailed(deviceInterface.Activate(IDD_IAudioSessionManager, ClsCtx.ALL, IntPtr.Zero, out var ptr));
+            audioSessionManager = new AudioSessionManager(ptr);
         }
 
         private void GetDeviceTopology()
         {
-            Marshal.ThrowExceptionForHR(deviceInterface.Activate(IDD_IDeviceTopology, ClsCtx.ALL, IntPtr.Zero, out var result));
-            deviceTopology = new DeviceTopology(result as IDeviceTopology);
+            CoreAudioException.ThrowIfFailed(deviceInterface.Activate(IDD_IDeviceTopology, ClsCtx.ALL, IntPtr.Zero, out var ptr));
+            try
+            {
+                deviceTopology = new DeviceTopology((IDeviceTopology)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                    ptr, CreateObjectFlags.UniqueInstance));
+            }
+            finally
+            {
+                Marshal.Release(ptr);
+            }
         }
 
         #endregion
@@ -99,10 +103,15 @@ namespace NAudio.CoreAudioApi
         #region Properties
 
         /// <summary>
-        /// Audio Client
-        /// Makes a new one each call to allow caller to manage when to dispose
-        /// n.b. should probably not be a property anymore
+        /// Creates a new AudioClient for this device. Each call creates a new instance;
+        /// the caller is responsible for disposing it.
         /// </summary>
+        public AudioClient CreateAudioClient() => GetAudioClient();
+
+        /// <summary>
+        /// Audio Client — creates a new instance per call. Caller must dispose.
+        /// </summary>
+        [Obsolete("Use CreateAudioClient() instead — this property creates a new instance on every access, which is misleading.")]
         public AudioClient AudioClient => GetAudioClient();
 
         /// <summary>
@@ -248,7 +257,7 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(deviceInterface.GetId(out var result));
+                CoreAudioException.ThrowIfFailed(deviceInterface.GetId(out var result));
                 return result;
             }
         }
@@ -260,8 +269,8 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                var ep = deviceInterface as IMMEndpoint;
-                ep.GetDataFlow(out var result);
+                var ep = (IMMEndpoint)deviceInterface;
+                CoreAudioException.ThrowIfFailed(ep.GetDataFlow(out var result));
                 return result;
             }
         }
@@ -273,7 +282,7 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(deviceInterface.GetState(out var result));
+                CoreAudioException.ThrowIfFailed(deviceInterface.GetState(out var result));
                 return result;
             }
         }
@@ -300,17 +309,21 @@ namespace NAudio.CoreAudioApi
         /// </summary>
         public void Dispose()
         {
-            this.audioEndpointVolume?.Dispose();
-            this.audioSessionManager?.Dispose();
+            audioMeterInformation?.Dispose();
+            audioMeterInformation = null;
+            audioEndpointVolume?.Dispose();
+            audioEndpointVolume = null;
+            audioSessionManager?.Dispose();
+            audioSessionManager = null;
+            if (deviceInterface != null)
+            {
+                if ((object)deviceInterface is ComObject co)
+                {
+                    co.FinalRelease();
+                }
+                deviceInterface = null;
+            }
             GC.SuppressFinalize(this);
-        }
-        
-        /// <summary>
-        /// Finalizer
-        /// </summary>
-        ~MMDevice()
-        {
-            Dispose();
         }
     }
 }

@@ -1,6 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+using System;
 
 namespace NAudio.Wave
 {
@@ -27,10 +25,10 @@ namespace NAudio.Wave
         /// <summary>
         /// Read simply returns what the source returns, but writes to disk along the way
         /// </summary>
-        public int Read(byte[] buffer, int offset, int count)
+        public int Read(Span<byte> buffer)
         {
-            int bytesRead = source.Read(buffer, offset, count);
-            writer.Write(buffer, offset, bytesRead);
+            int bytesRead = source.Read(buffer);
+            writer.Write(buffer.Slice(0, bytesRead));
             return bytesRead;
         }
 

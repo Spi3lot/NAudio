@@ -1,4 +1,5 @@
-﻿using NAudio.Utils;
+using System;
+using NAudio.Utils;
 
 namespace NAudio.Wave.SampleProviders
 {
@@ -19,7 +20,7 @@ namespace NAudio.Wave.SampleProviders
         protected byte[] sourceBuffer;
 
         /// <summary>
-        /// Initialises a new instance of SampleProviderConverterBase
+        /// Initializes a new instance of SampleProviderConverterBase
         /// </summary>
         /// <param name="source">Source Wave provider</param>
         public SampleProviderConverterBase(IWaveProvider source)
@@ -37,10 +38,8 @@ namespace NAudio.Wave.SampleProviders
         /// Reads samples from the source wave provider
         /// </summary>
         /// <param name="buffer">Sample buffer</param>
-        /// <param name="offset">Offset into sample buffer</param>
-        /// <param name="count">Number of samples required</param>
         /// <returns>Number of samples read</returns>
-        public abstract int Read(float[] buffer, int offset, int count);
+        public abstract int Read(Span<float> buffer);
 
         /// <summary>
         /// Ensure the source buffer exists and is big enough

@@ -1,4 +1,5 @@
-﻿using System;
+using System;
+using System.Runtime.InteropServices;
 
 namespace NAudio.Wave.SampleProviders
 {
@@ -26,11 +27,11 @@ namespace NAudio.Wave.SampleProviders
         /// <summary>
         /// Reads from this provider
         /// </summary>
-        public int Read(byte[] buffer, int offset, int count)
+        public int Read(Span<byte> buffer)
         {
-            int samplesNeeded = count / 4;
-            var wb = new WaveBuffer(buffer);
-            int samplesRead = source.Read(wb.FloatBuffer, offset / 4, samplesNeeded);
+            int samplesNeeded = buffer.Length / 4;
+            var floatSpan = MemoryMarshal.Cast<byte, float>(buffer);
+            int samplesRead = source.Read(floatSpan.Slice(0, samplesNeeded));
             return samplesRead * 4;
         }
 

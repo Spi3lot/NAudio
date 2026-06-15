@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using NAudio.Utils;
 
@@ -76,11 +76,10 @@ namespace NAudio.Wave.SampleProviders
         /// Reads samples from this sample provider
         /// </summary>
         /// <param name="buffer">Buffer to be filled with sample data</param>
-        /// <param name="offset">Offset into buffer to start writing to, usually 0</param>
-        /// <param name="count">Number of samples required</param>
         /// <returns>Number of samples read</returns>
-        public int Read(float[] buffer, int offset, int count)
+        public int Read(Span<float> buffer)
         {
+            int count = buffer.Length;
             int sampleFramesRequested = count / outputChannelCount;
             int inputOffset = 0;
             int sampleFramesRead = 0;
@@ -89,7 +88,7 @@ namespace NAudio.Wave.SampleProviders
             {
                 int samplesRequired = sampleFramesRequested * input.WaveFormat.Channels;
                 inputBuffer = BufferHelpers.Ensure(inputBuffer, samplesRequired);
-                int samplesRead = input.Read(inputBuffer, 0, samplesRequired);
+                int samplesRead = input.Read(inputBuffer.AsSpan(0, samplesRequired));
                 sampleFramesRead = Math.Max(sampleFramesRead, samplesRead / input.WaveFormat.Channels);
 
                 for (int n = 0; n < input.WaveFormat.Channels; n++)
@@ -100,7 +99,7 @@ namespace NAudio.Wave.SampleProviders
                         if (mappings[outputIndex] == inputIndex)
                         {
                             int inputBufferOffset = n;
-                            int outputBufferOffset = offset + outputIndex;
+                            int outputBufferOffset = outputIndex;
                             int sample = 0;
                             while (sample < sampleFramesRequested && inputBufferOffset < samplesRead)
                             {

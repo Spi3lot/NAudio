@@ -1,9 +1,7 @@
 using System;
 using System.IO;
-using System.Collections.Generic;
-using NAudio.FileFormats.Wav;
 
-namespace NAudio.Wave 
+namespace NAudio.Wave
 {
     /// <summary>This class supports the reading of WAV files,
     /// providing a repositionable WaveStream that returns the raw data
@@ -48,9 +46,14 @@ namespace NAudio.Wave
             {
                 chunkReader.ReadWaveHeader(inputStream);
                 waveFormat = chunkReader.WaveFormat;
+                if (waveFormat.BlockAlign <= 0)
+                {
+                    throw new InvalidDataException(
+                        $"Invalid WAV file - block align is {waveFormat.BlockAlign}.");
+                }
                 dataPosition = chunkReader.DataChunkPosition;
                 dataChunkLength = chunkReader.DataChunkLength;
-                ExtraChunks = chunkReader.RiffChunks;
+                Chunks = new WaveChunks(inputStream, chunkReader.RiffChunks);
             }
             catch
             {
@@ -67,26 +70,13 @@ namespace NAudio.Wave
         }
 
         /// <summary>
-        /// Gets a list of the additional chunks found in this file
+        /// The non-essential RIFF chunks found in this file (everything except <c>fmt</c> and <c>data</c>).
+        /// Use the returned <see cref="WaveChunks"/> to enumerate chunk metadata, fetch raw bytes via
+        /// <see cref="WaveChunks.GetData"/>, or run an <see cref="IWaveChunkInterpreter{T}"/> —
+        /// the built-in interpreters for cue lists, BWF, and LIST/INFO metadata are exposed as
+        /// extension methods in <see cref="WaveChunksExtensions"/>.
         /// </summary>
-        public List<RiffChunk> ExtraChunks { get; }
-
-        /// <summary>
-        /// Gets the data for the specified chunk
-        /// </summary>
-        public byte[] GetChunkData(RiffChunk chunk)
-        {
-            long oldPosition = waveStream.Position;
-            waveStream.Position = chunk.StreamPosition;
-            byte[] data = new byte[chunk.Length];
-            int bytesRead = waveStream.Read(data, 0, data.Length);
-            if (bytesRead < data.Length)
-            {
-                throw new InvalidOperationException($"Could not read chunk data: expected {data.Length} bytes, got {bytesRead}");
-            }
-            waveStream.Position = oldPosition;
-            return data;
-        }
+        public WaveChunks Chunks { get; }
 
         /// <summary>
         /// Cleans up the resources associated with this WaveFileReader
@@ -171,26 +161,34 @@ namespace NAudio.Wave
         }
 
         /// <summary>
-        /// Reads bytes from the Wave File
-        /// <see cref="Stream.Read"/>
+        /// Reads bytes from the Wave File into the provided span.
+        /// <see cref="Stream.Read(Span{byte})"/>
         /// </summary>
-        public override int Read(byte[] array, int offset, int count)
+        public override int Read(Span<byte> buffer)
         {
-            if (count % waveFormat.BlockAlign != 0)
+            if (buffer.Length % waveFormat.BlockAlign != 0)
             {
                 throw new ArgumentException(
-                    $"Must read complete blocks: requested {count}, block align is {WaveFormat.BlockAlign}");
+                    $"Must read complete blocks: requested {buffer.Length}, block align is {WaveFormat.BlockAlign}");
             }
             lock (lockObject)
             {
                 // sometimes there is more junk at the end of the file past the data chunk
+                int count = buffer.Length;
                 if (Position + count > dataChunkLength)
                 {
-                    count = (int) (dataChunkLength - Position);
+                    count = (int)(dataChunkLength - Position);
                 }
-                return waveStream.Read(array, offset, count);
+                return waveStream.Read(buffer.Slice(0, count));
             }
         }
+
+        /// <summary>
+        /// Reads bytes from the Wave File.
+        /// <see cref="Stream.Read(byte[], int, int)"/>
+        /// </summary>
+        public override int Read(byte[] array, int offset, int count)
+            => Read(array.AsSpan(offset, count));
         
         /// <summary>
         /// Attempts to read the next sample or group of samples as floating point normalised into the range -1.0f to 1.0f

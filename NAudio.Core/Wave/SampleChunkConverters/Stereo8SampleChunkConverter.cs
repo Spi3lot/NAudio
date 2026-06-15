@@ -1,4 +1,5 @@
-﻿using NAudio.Utils;
+﻿using System;
+using NAudio.Utils;
 
 namespace NAudio.Wave.SampleProviders
 {
@@ -19,7 +20,7 @@ namespace NAudio.Wave.SampleProviders
         {
             int sourceBytesRequired = samplePairsRequired * 2;
             sourceBuffer = BufferHelpers.Ensure(sourceBuffer, sourceBytesRequired);
-            sourceBytes = source.Read(sourceBuffer, 0, sourceBytesRequired);
+            sourceBytes = source.Read(sourceBuffer.AsSpan(0, sourceBytesRequired));
             offset = 0;
         }
 

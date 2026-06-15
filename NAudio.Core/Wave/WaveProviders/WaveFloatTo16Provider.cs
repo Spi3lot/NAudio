@@ -1,7 +1,5 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-using NAudio.Wave;
+using System;
+using System.Runtime.InteropServices;
 using NAudio.Utils;
 
 namespace NAudio.Wave
@@ -23,9 +21,9 @@ namespace NAudio.Wave
         public WaveFloatTo16Provider(IWaveProvider sourceProvider)
         {
             if (sourceProvider.WaveFormat.Encoding != WaveFormatEncoding.IeeeFloat)
-                throw new ArgumentException("Input wave provider must be IEEE float", "sourceProvider");
+                throw new ArgumentException("Input wave provider must be IEEE float", nameof(sourceProvider));
             if (sourceProvider.WaveFormat.BitsPerSample != 32)
-                throw new ArgumentException("Input wave provider must be 32 bit", "sourceProvider");
+                throw new ArgumentException("Input wave provider must be 32 bit", nameof(sourceProvider));
 
             waveFormat = new WaveFormat(sourceProvider.WaveFormat.SampleRate, 16, sourceProvider.WaveFormat.Channels);
 
@@ -36,30 +34,27 @@ namespace NAudio.Wave
         /// <summary>
         /// Reads bytes from this wave stream
         /// </summary>
-        /// <param name="destBuffer">The destination buffer</param>
-        /// <param name="offset">Offset into the destination buffer</param>
-        /// <param name="numBytes">Number of bytes read</param>
+        /// <param name="buffer">The destination buffer</param>
         /// <returns>Number of bytes read.</returns>
-        public int Read(byte[] destBuffer, int offset, int numBytes)
+        public int Read(Span<byte> buffer)
         {
-            int sourceBytesRequired = numBytes * 2;
+            int sourceBytesRequired = buffer.Length * 2;
             sourceBuffer = BufferHelpers.Ensure(sourceBuffer, sourceBytesRequired);
-            int sourceBytesRead = sourceProvider.Read(sourceBuffer, 0, sourceBytesRequired);
-            WaveBuffer sourceWaveBuffer = new WaveBuffer(sourceBuffer);
-            WaveBuffer destWaveBuffer = new WaveBuffer(destBuffer);
+            int sourceBytesRead = sourceProvider.Read(sourceBuffer.AsSpan(0, sourceBytesRequired));
+            var sourceFloatSpan = MemoryMarshal.Cast<byte, float>(sourceBuffer.AsSpan());
+            var destShortSpan = MemoryMarshal.Cast<byte, short>(buffer);
 
             int sourceSamples = sourceBytesRead / 4;
-            int destOffset = offset / 2;
             for (int sample = 0; sample < sourceSamples; sample++)
             {
                 // adjust volume
-                float sample32 = sourceWaveBuffer.FloatBuffer[sample] * volume;
+                float sample32 = sourceFloatSpan[sample] * volume;
                 // clip
                 if (sample32 > 1.0f)
                     sample32 = 1.0f;
                 if (sample32 < -1.0f)
                     sample32 = -1.0f;
-                destWaveBuffer.ShortBuffer[destOffset++] = (short)(sample32 * 32767);
+                destShortSpan[sample] = (short)(sample32 * 32767);
             }
 
             return sourceSamples * 2;

@@ -1,10 +1,10 @@
-﻿using System;
+using System;
 
 namespace NAudio.Wave.SampleProviders
 {
     /// <summary>
     /// No nonsense mono to stereo provider, no volume adjustment,
-    /// just copies input to left and right. 
+    /// just copies input to left and right.
     /// </summary>
     public class MonoToStereoSampleProvider : ISampleProvider
     {
@@ -14,7 +14,7 @@ namespace NAudio.Wave.SampleProviders
         /// <summary>
         /// Initializes a new instance of MonoToStereoSampleProvider
         /// </summary>
-        /// <param name="source">Source sample provider</param>
+        /// <param name="source">Source sample source</param>
         public MonoToStereoSampleProvider(ISampleProvider source)
         {
             LeftVolume = 1.0f;
@@ -33,18 +33,14 @@ namespace NAudio.Wave.SampleProviders
         public WaveFormat WaveFormat { get; }
 
         /// <summary>
-        /// Reads samples from this provider
+        /// Reads samples from this provider into a span
         /// </summary>
-        /// <param name="buffer">Sample buffer</param>
-        /// <param name="offset">Offset into sample buffer</param>
-        /// <param name="count">Number of samples required</param>
-        /// <returns>Number of samples read</returns>
-        public int Read(float[] buffer, int offset, int count)
+        public int Read(Span<float> buffer)
         {
-            var sourceSamplesRequired = count / 2;
-            var outIndex = offset;
+            var sourceSamplesRequired = buffer.Length / 2;
             EnsureSourceBuffer(sourceSamplesRequired);
-            var sourceSamplesRead = source.Read(sourceBuffer, 0, sourceSamplesRequired);
+            var sourceSamplesRead = source.Read(sourceBuffer.AsSpan(0, sourceSamplesRequired));
+            int outIndex = 0;
             for (var n = 0; n < sourceSamplesRead; n++)
             {
                 buffer[outIndex++] = sourceBuffer[n] * LeftVolume;

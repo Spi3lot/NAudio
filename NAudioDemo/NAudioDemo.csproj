@@ -1,7 +1,7 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks>net8.0-windows</TargetFrameworks>
+    <TargetFrameworks>net9.0-windows10.0.19041.0</TargetFrameworks>
     <OutputType>WinExe</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>NAudioDemo</RootNamespace>
@@ -11,12 +11,9 @@
     <Title>NAudioDemo</Title>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- [GeneratedComClass] in DeviceNotificationsPanel requires unsafe code support. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
-  <ItemGroup>
-    <Reference Include="NSpeex">
-      <HintPath>..\Lib\NSpeex\NSpeex.dll</HintPath>
-    </Reference>
-  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\NAudio.Asio\NAudio.Asio.csproj" />
     <ProjectReference Include="..\NAudio.Midi\NAudio.Midi.csproj" />
@@ -36,5 +33,8 @@
     <None Include="Resources\Mute.png" />
     <Content Include="Resources\Open.png" />
     <None Include="Resources\Unmute.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Concentus" Version="2.2.2" />
   </ItemGroup>
 </Project>

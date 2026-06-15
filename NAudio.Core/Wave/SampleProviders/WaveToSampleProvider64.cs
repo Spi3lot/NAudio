@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace NAudio.Wave.SampleProviders
 {
@@ -24,13 +24,13 @@ namespace NAudio.Wave.SampleProviders
         /// <summary>
         /// Reads from this provider
         /// </summary>
-        public override int Read(float[] buffer, int offset, int count)
+        public override int Read(Span<float> buffer)
         {
-            int bytesNeeded = count * 8;
+            int bytesNeeded = buffer.Length * 8;
             EnsureSourceBuffer(bytesNeeded);
-            int bytesRead = source.Read(sourceBuffer, 0, bytesNeeded);
+            int bytesRead = source.Read(sourceBuffer.AsSpan(0, bytesNeeded));
             int samplesRead = bytesRead / 8;
-            int outputIndex = offset;
+            int outputIndex = 0;
             for (int n = 0; n < bytesRead; n += 8)
             {
                 long sample64 = BitConverter.ToInt64(sourceBuffer, n);

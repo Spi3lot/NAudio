@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Runtime.InteropServices;
 using NAudio.Wave.SampleProviders;
 
 // ReSharper disable once CheckNamespace
@@ -49,7 +50,7 @@ namespace NAudio.Wave
                 readerStream = new WaveFileReader(fileName);
                 if (readerStream.WaveFormat.Encoding != WaveFormatEncoding.Pcm && readerStream.WaveFormat.Encoding != WaveFormatEncoding.IeeeFloat)
                 {
-#if NET6_0_OR_GREATER && !WINDOWS
+#if !WINDOWS
                     throw new InvalidOperationException("WAV files with non-PCM encoding require Windows for ACM codec conversion");
 #else
                     readerStream = WaveFormatConversionStream.CreatePcmStream(readerStream);
@@ -59,13 +60,13 @@ namespace NAudio.Wave
             }
             else if (fileName.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase))
             {
-#if NET6_0_OR_GREATER && !WINDOWS
-                throw new InvalidOperationException("MP3 file reading requires Windows for ACM or Media Foundation codecs");
-#else
+#if WASAPI
                 if (Environment.OSVersion.Version.Major < 6)
                     readerStream = new Mp3FileReader(fileName);
                 else // make MediaFoundationReader the default for MP3 going forwards
                     readerStream = new MediaFoundationReader(fileName);
+#else
+                throw new InvalidOperationException("MP3 file reading requires the NAudio.Wasapi package for Media Foundation codecs");
 #endif
             }
             else if (fileName.EndsWith(".aiff", StringComparison.OrdinalIgnoreCase) || fileName.EndsWith(".aif", StringComparison.OrdinalIgnoreCase))
@@ -74,11 +75,11 @@ namespace NAudio.Wave
             }
             else
             {
-#if NET6_0_OR_GREATER && !WINDOWS
-                throw new InvalidOperationException($"Unsupported file format. Media Foundation reader requires Windows.");
-#else
+#if WASAPI
                 // fall back to media foundation reader, see if that can play it
                 readerStream = new MediaFoundationReader(fileName);
+#else
+                throw new InvalidOperationException($"Unsupported file format. Media Foundation reader requires the NAudio.Wasapi package.");
 #endif
             }
         }
@@ -109,30 +110,27 @@ namespace NAudio.Wave
         /// <summary>
         /// Reads from this wave stream
         /// </summary>
-        /// <param name="buffer">Audio buffer</param>
-        /// <param name="offset">Offset into buffer</param>
-        /// <param name="count">Number of bytes required</param>
-        /// <returns>Number of bytes read</returns>
-        public override int Read(byte[] buffer, int offset, int count)
+        public override int Read(Span<byte> buffer)
         {
-            var waveBuffer = new WaveBuffer(buffer);
-            int samplesRequired = count / 4;
-            int samplesRead = Read(waveBuffer.FloatBuffer, offset / 4, samplesRequired);
+            var floatSpan = MemoryMarshal.Cast<byte, float>(buffer);
+            int samplesRead = Read(floatSpan);
             return samplesRead * 4;
         }
 
         /// <summary>
-        /// Reads audio from this sample provider
+        /// Reads from this wave stream
         /// </summary>
-        /// <param name="buffer">Sample buffer</param>
-        /// <param name="offset">Offset into sample buffer</param>
-        /// <param name="count">Number of samples required</param>
-        /// <returns>Number of samples read</returns>
-        public int Read(float[] buffer, int offset, int count)
+        public override int Read(byte[] buffer, int offset, int count)
+            => Read(buffer.AsSpan(offset, count));
+
+        /// <summary>
+        /// Reads audio samples from this file reader
+        /// </summary>
+        public int Read(Span<float> buffer)
         {
             lock (lockObject)
             {
-                return sampleChannel.Read(buffer, offset, count);
+                return sampleChannel.Read(buffer);
             }
         }
 

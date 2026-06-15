@@ -1,4 +1,6 @@
-﻿using NAudio.Utils;
+﻿using System;
+using System.Runtime.InteropServices;
+using NAudio.Utils;
 
 namespace NAudio.Wave.SampleProviders
 {
@@ -6,7 +8,6 @@ namespace NAudio.Wave.SampleProviders
     {
         private int sourceSample;
         private byte[] sourceBuffer;
-        private WaveBuffer sourceWaveBuffer;
         private int sourceSamples;
 
         public bool Supports(WaveFormat waveFormat)
@@ -19,8 +20,7 @@ namespace NAudio.Wave.SampleProviders
         {
             int sourceBytesRequired = samplePairsRequired * 4;
             sourceBuffer = BufferHelpers.Ensure(sourceBuffer, sourceBytesRequired);
-            sourceWaveBuffer = new WaveBuffer(sourceBuffer);
-            sourceSamples = source.Read(sourceBuffer, 0, sourceBytesRequired) / 4;
+            sourceSamples = source.Read(sourceBuffer.AsSpan(0, sourceBytesRequired)) / 4;
             sourceSample = 0;
         }
 
@@ -28,7 +28,8 @@ namespace NAudio.Wave.SampleProviders
         {
             if (sourceSample < sourceSamples)
             {
-                sampleLeft = sourceWaveBuffer.FloatBuffer[sourceSample++];
+                var floats = MemoryMarshal.Cast<byte, float>(sourceBuffer);
+                sampleLeft = floats[sourceSample++];
                 sampleRight = sampleLeft;
                 return true;
             }

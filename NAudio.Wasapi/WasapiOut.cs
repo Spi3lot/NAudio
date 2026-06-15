@@ -2,7 +2,6 @@
 using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Utils;
 using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -12,6 +11,7 @@ namespace NAudio.Wave
     /// <summary>
     /// Support for playback using Wasapi
     /// </summary>
+    [Obsolete("Use WasapiPlayerBuilder to create a WasapiPlayer instead. WasapiPlayer provides zero-copy buffers, MMCSS thread priority, and IAudioClient3 low-latency support.")]
     public class WasapiOut : IWavePlayer, IWavePosition
     {
         private AudioClient audioClient;
@@ -29,8 +29,7 @@ namespace NAudio.Wave
         private volatile PlaybackState playbackState;
         private Thread playThread;
         private readonly SynchronizationContext syncContext;
-        private bool dmoResamplerNeeded;
-        
+
         /// <summary>
         /// Playback Stopped
         /// </summary>
@@ -77,7 +76,7 @@ namespace NAudio.Wave
         /// <param name="latency">Desired latency in milliseconds</param>
         public WasapiOut(MMDevice device, AudioClientShareMode shareMode, bool useEventSync, int latency)
         {
-            audioClient = device.AudioClient;
+            audioClient = device.CreateAudioClient();
             mmDevice = device;
             this.shareMode = shareMode;
             isUsingEventSync = useEventSync;
@@ -99,16 +98,10 @@ namespace NAudio.Wave
 
         private void PlayThread()
         {
-            ResamplerDmoStream resamplerDmoStream = null;
             IWaveProvider playbackProvider = sourceProvider;
             Exception exception = null;
             try
             {
-                if (dmoResamplerNeeded)
-                {
-                    resamplerDmoStream = new ResamplerDmoStream(sourceProvider, OutputWaveFormat);
-                    playbackProvider = resamplerDmoStream;
-                }
                 // fill a whole buffer
                 bufferFrameCount = audioClient.BufferSize;
                 bytesPerFrame = OutputWaveFormat.Channels * OutputWaveFormat.BitsPerSample / 8;
@@ -164,7 +157,7 @@ namespace NAudio.Wave
                             numFramesPadding = audioClient.CurrentPadding;
                         }
                         int numFramesAvailable = bufferFrameCount - numFramesPadding;
-                        if (numFramesAvailable > 10) // see https://naudio.codeplex.com/workitem/16363
+                        if (numFramesAvailable > 10)
                         {
                             if (FillBuffer(playbackProvider, numFramesAvailable))
                             {
@@ -190,10 +183,6 @@ namespace NAudio.Wave
             }
             finally
             {
-                if (resamplerDmoStream != null)
-                {
-                    resamplerDmoStream.Dispose();
-                }
                 RaisePlaybackStopped(exception);
             }
         }
@@ -220,7 +209,7 @@ namespace NAudio.Wave
         private bool FillBuffer(IWaveProvider playbackProvider, int frameCount)
         {
             var readLength = frameCount * bytesPerFrame;
-            int read = playbackProvider.Read(readBuffer, 0, readLength);
+            int read = playbackProvider.Read(readBuffer.AsSpan(0, readLength));
             if (read == 0)
             {
                 return true;
@@ -255,69 +244,6 @@ namespace NAudio.Wave
                 renderClient.ReleaseBuffer(actualFrameCount, AudioClientBufferFlags.None);
             }
             return false;
-        }
-
-        private WaveFormat GetFallbackFormat()
-        {
-            var deviceSampleRate = audioClient.MixFormat.SampleRate;
-            var deviceChannels = audioClient.MixFormat.Channels; // almost certain to be stereo
-
-            // we are in exclusive mode
-            // First priority is to try the sample rate you provided.
-            var sampleRatesToTry = new List<int>() { OutputWaveFormat.SampleRate };
-            // Second priority is to use the sample rate the device wants
-            if (!sampleRatesToTry.Contains(deviceSampleRate)) sampleRatesToTry.Add(deviceSampleRate);
-            // And if we've not already got 44.1 and 48kHz in the list, let's try them too
-            if (!sampleRatesToTry.Contains(44100)) sampleRatesToTry.Add(44100);
-            if (!sampleRatesToTry.Contains(48000)) sampleRatesToTry.Add(48000);
-
-            var channelCountsToTry = new List<int>() { OutputWaveFormat.Channels };
-            if (!channelCountsToTry.Contains(deviceChannels)) channelCountsToTry.Add(deviceChannels);
-            if (!channelCountsToTry.Contains(2)) channelCountsToTry.Add(2);
-
-            var bitDepthsToTry = new List<int>() { OutputWaveFormat.BitsPerSample };
-            if (!bitDepthsToTry.Contains(32)) bitDepthsToTry.Add(32);
-            if (!bitDepthsToTry.Contains(24)) bitDepthsToTry.Add(24);
-            if (!bitDepthsToTry.Contains(16)) bitDepthsToTry.Add(16);
-
-            var channelMasksToTry = new List<int>() { 0 };
-            // The WaveFormatExtensible constructor covers the following channel masks by default.
-            // 0x0003 2.0: FL|FR                      (KSAUDIO_SPEAKER_STEREO)
-            // 0x0007 3.0: FL|FR|FC                   (KSAUDIO_SPEAKER_3POINT0)
-            // 0x000F 3.1: FL|FR|FC|LFE               (KSAUDIO_SPEAKER_3POINT1)
-            // 0x003F 5.1: FL|FR|FC|LFE|BL|BR         (KSAUDIO_SPEAKER_5POINT1_BACK; obsolete)
-            // 0x00FF 7.1: FL|FR|FC|LFE|BL|BR|FLC|FRC (KSAUDIO_SPEAKER_7POINT1_WIDE; obsolete)
-            // Add masks for other configurations.
-            // Candidates are taken from ksmedia.h in the Windows Driver Kit.
-            if (channelCountsToTry.Contains(1)) channelMasksToTry.Add(0x0004); // 1.0: FC        (KSAUDIO_SPEAKER_MONO)
-            if (channelCountsToTry.Contains(2)) channelMasksToTry.Add(0x000C); // 1.1: FC|LFE    (KSAUDIO_SPEAKER_1POINT1)
-            if (channelCountsToTry.Contains(3)) channelMasksToTry.Add(0x000B); // 2.1: FL|FR|LFE (KSAUDIO_SPEAKER_2POINT1)
-            if (channelCountsToTry.Contains(4))
-            {
-                channelMasksToTry.Add(0x0033); // 4.0: FL|FR|BL|BR (KSAUDIO_SPEAKER_QUAD)
-                channelMasksToTry.Add(0x0107); // 4.0: FL|FR|FC|BC (KSAUDIO_SPEAKER_SURROUND)
-            }
-            if (channelCountsToTry.Contains(5)) channelMasksToTry.Add(0x0607); // 5.0: FL|FR|FC|SL|SR           (KSAUDIO_SPEAKER_5POINT0)
-            if (channelCountsToTry.Contains(6)) channelMasksToTry.Add(0x060F); // 5.1: FL|FR|FC|LFE|SL|SR       (KSAUDIO_SPEAKER_5POINT1_SURROUND)
-            if (channelCountsToTry.Contains(7)) channelMasksToTry.Add(0x0637); // 7.0: FL|FR|FC|BL|BR|SL|SR     (KSAUDIO_SPEAKER_7POINT0)
-            if (channelCountsToTry.Contains(8)) channelMasksToTry.Add(0x063F); // 7.1: FL|FR|FC|LFE|BL|BR|SL|SR (KSAUDIO_SPEAKER_7POINT1_SURROUND)
-
-            foreach (var sampleRate in sampleRatesToTry)
-            {
-                foreach (var channelCount in channelCountsToTry)
-                {
-                    foreach (var bitDepth in bitDepthsToTry)
-                    {
-                        foreach (var channelMask in channelMasksToTry)
-                        {
-                            var format = new WaveFormatExtensible(sampleRate, bitDepth, channelCount, channelMask);
-                            if (audioClient.IsFormatSupported(shareMode, format))
-                                return format;
-                        }
-                    }
-                }
-            }
-            throw new NotSupportedException("Can't find a supported format to use");
         }
 
         /// <summary>
@@ -363,9 +289,10 @@ namespace NAudio.Wave
                     playThread = new Thread(PlayThread)
                     {
                         IsBackground = true,
+                        Name = "NAudio WasapiOut Playback",
                     };
                     playbackState = PlaybackState.Playing;
-                    playThread.Start();                    
+                    playThread.Start();
                 }
                 else
                 {
@@ -417,41 +344,11 @@ namespace NAudio.Wave
                 flags = AudioClientStreamFlags.None;
                 if (!audioClient.IsFormatSupported(shareMode, OutputWaveFormat, out WaveFormatExtensible closestSampleRateFormat))
                 {
-                    // Use closesSampleRateFormat (in sharedMode, it equals usualy to the audioClient.MixFormat)
-                    // See documentation : http://msdn.microsoft.com/en-us/library/ms678737(VS.85).aspx 
-                    // They say : "In shared mode, the audio engine always supports the mix format"
-                    // The MixFormat is more likely to be a WaveFormatExtensible.
-                    if (closestSampleRateFormat == null)
-                    {
-
-                        OutputWaveFormat = GetFallbackFormat();
-                    }
-                    else
-                    {
-                        OutputWaveFormat = closestSampleRateFormat;
-                    }
-
-                    try
-                    {
-                        // just check that we can make it.
-                        using (new ResamplerDmoStream(waveProvider, OutputWaveFormat))
-                        {
-                        }
-                    }
-                    catch (Exception)
-                    {
-                        // On Windows 10 some poorly coded drivers return a bad format in to closestSampleRateFormat
-                        // In that case, try and fallback as if it provided no closest (e.g. force trying the mix format)
-                        OutputWaveFormat = GetFallbackFormat();
-                        using (new ResamplerDmoStream(waveProvider, OutputWaveFormat))
-                        {
-                        }
-                    }
-                    dmoResamplerNeeded = true;
-                }
-                else
-                {
-                    dmoResamplerNeeded = false;
+                    throw new NotSupportedException(
+                        $"Exclusive-mode WasapiOut requires a natively-supported format. The source format " +
+                        $"({OutputWaveFormat}) is not supported by the device" +
+                        (closestSampleRateFormat != null ? $"; closest match: {closestSampleRateFormat}." : ".") +
+                        " Resample upstream (e.g. with MediaFoundationResampler), use shared mode, or use WasapiPlayerBuilder.");
                 }
             }
 
@@ -495,7 +392,7 @@ namespace NAudio.Wave
                             this.audioClient.BufferSize + 0.5);
 
                         this.audioClient.Dispose();
-                        this.audioClient = this.mmDevice.AudioClient;
+                        this.audioClient = this.mmDevice.CreateAudioClient();
                         this.audioClient.Initialize(this.shareMode, AudioClientStreamFlags.EventCallback | flags,
                                             newLatencyRefTimes, newLatencyRefTimes, this.OutputWaveFormat, Guid.Empty);
                     }

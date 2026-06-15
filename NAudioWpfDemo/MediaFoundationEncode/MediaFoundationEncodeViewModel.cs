@@ -12,7 +12,7 @@ using SaveFileDialog = Microsoft.Win32.SaveFileDialog;
 
 namespace NAudioWpfDemo.MediaFoundationEncode
 {
-    internal class MediaFoundationEncodeViewModel : ViewModelBase, IDisposable
+    internal class MediaFoundationEncodeViewModel : ViewModelBase
     {
         private readonly Dictionary<Guid, List<MediaTypeViewModel>> allMediaTypes;
         private EncoderViewModel selectedOutputFormat;
@@ -28,7 +28,6 @@ namespace NAudioWpfDemo.MediaFoundationEncode
 
         public MediaFoundationEncodeViewModel()
         {
-            MediaFoundationApi.Startup();
             allMediaTypes = new Dictionary<Guid, List<MediaTypeViewModel>>();
             SupportedMediaTypes = new List<MediaTypeViewModel>();
             EncodeCommand = new DelegateCommand(Encode);
@@ -53,7 +52,7 @@ namespace NAudioWpfDemo.MediaFoundationEncode
         private void SelectInputFile()
         {
             var ofd = new OpenFileDialog();
-            ofd.Filter = "Audio files|*.mp3;*.wav;*.wma;*.aiff;*.aac";
+            ofd.Filter = "Audio files|*.mp3;*.wav;*.wma;*.aiff;*.aac;*.mp4;*.m4a;*.flac;*.opus;*.ogg;*.mka;*.webm";
             if (ofd.ShowDialog() == true)
             {
                 if (TryOpenInputFile(ofd.FileName))
@@ -215,10 +214,6 @@ namespace NAudioWpfDemo.MediaFoundationEncode
             return (sfd.ShowDialog() == true) ? sfd.FileName : null;
         }
 
-        public void Dispose()
-        {
-            MediaFoundationApi.Shutdown();
-        }
     }
 
     enum AacPayloadType

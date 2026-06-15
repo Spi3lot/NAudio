@@ -2,6 +2,7 @@
 using System;
 using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 
 namespace NAudio.CoreAudioApi
 {
@@ -12,9 +13,17 @@ namespace NAudio.CoreAudioApi
     {
         IAudioStreamVolume audioStreamVolumeInterface;
 
-        internal AudioStreamVolume(IAudioStreamVolume audioStreamVolumeInterface)
+        internal AudioStreamVolume(IntPtr nativePointer)
         {
-            this.audioStreamVolumeInterface = audioStreamVolumeInterface;
+            try
+            {
+                audioStreamVolumeInterface = (IAudioStreamVolume)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                    nativePointer, CreateObjectFlags.UniqueInstance);
+            }
+            finally
+            {
+                Marshal.Release(nativePointer);
+            }
         }
 
         /// <summary>
@@ -37,9 +46,9 @@ namespace NAudio.CoreAudioApi
         /// <returns>An array of volume levels between 0.0 and 1.0 for each channel in the audio stream.</returns>
         public float[] GetAllVolumes()
         {
-            Marshal.ThrowExceptionForHR(audioStreamVolumeInterface.GetChannelCount(out var channels));
+            CoreAudioException.ThrowIfFailed(audioStreamVolumeInterface.GetChannelCount(out var channels));
             var levels = new float[channels];
-            Marshal.ThrowExceptionForHR(audioStreamVolumeInterface.GetAllVolumes(channels, levels));
+            CoreAudioException.ThrowIfFailed(audioStreamVolumeInterface.GetAllVolumes(channels, levels));
             return levels;
         }
 
@@ -50,7 +59,7 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(audioStreamVolumeInterface.GetChannelCount(out var channels));
+                CoreAudioException.ThrowIfFailed(audioStreamVolumeInterface.GetChannelCount(out var channels));
                 unchecked
                 {
                     return (int)channels;
@@ -72,7 +81,7 @@ namespace NAudio.CoreAudioApi
             {
                 index = (uint)channelIndex;
             }
-            Marshal.ThrowExceptionForHR(audioStreamVolumeInterface.GetChannelVolume(index, out var level));
+            CoreAudioException.ThrowIfFailed(audioStreamVolumeInterface.GetChannelVolume(index, out var level));
             return level;
         }
 
@@ -109,7 +118,7 @@ namespace NAudio.CoreAudioApi
             }
             unchecked
             {
-                Marshal.ThrowExceptionForHR(audioStreamVolumeInterface.SetAllVoumes((uint)channelCount, levels));
+                CoreAudioException.ThrowIfFailed(audioStreamVolumeInterface.SetAllVoumes((uint)channelCount, levels));
             }
         }
 
@@ -126,7 +135,7 @@ namespace NAudio.CoreAudioApi
             if (level > 1.0f) throw new ArgumentOutOfRangeException(nameof(level), "Volume must be between 0.0 and 1.0");
             unchecked
             {
-                Marshal.ThrowExceptionForHR(audioStreamVolumeInterface.SetChannelVolume((uint)index, level));
+                CoreAudioException.ThrowIfFailed(audioStreamVolumeInterface.SetChannelVolume((uint)index, level));
             }
         }
 
@@ -137,25 +146,15 @@ namespace NAudio.CoreAudioApi
         /// </summary>
         public void Dispose()
         {
-            Dispose(true);
-            GC.SuppressFinalize(this);
-        }
-
-        /// <summary>
-        /// Release/cleanup objects during Dispose/finalization.
-        /// </summary>
-        /// <param name="disposing">True if disposing and false if being finalized.</param>
-        protected virtual void Dispose(bool disposing)
-        {
-            if (disposing)
+            if (audioStreamVolumeInterface != null)
             {
-                if (audioStreamVolumeInterface != null)
+                if ((object)audioStreamVolumeInterface is ComObject co)
                 {
-                    // although GC would do this for us, we want it done now
-                    Marshal.ReleaseComObject(audioStreamVolumeInterface);
-                    audioStreamVolumeInterface = null;
+                    co.FinalRelease();
                 }
+                audioStreamVolumeInterface = null;
             }
+            GC.SuppressFinalize(this);
         }
 
         #endregion

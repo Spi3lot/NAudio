@@ -1,7 +1,9 @@
-﻿namespace NAudio.Wave
+﻿using System;
+
+namespace NAudio.Wave
 {
     /// <summary>
-    /// Buffered WaveProvider taking source data from WaveIn
+    /// Buffered IWaveProvider taking source data from WaveIn
     /// </summary>
     public class WaveInProvider : IWaveProvider
     {
@@ -22,15 +24,17 @@
 
         private void OnDataAvailable(object sender, WaveInEventArgs e)
         {
-            bufferedWaveProvider.AddSamples(e.Buffer, 0, e.BytesRecorded);
+            // BufferSpan avoids materialising e.Buffer when the event is backed by a
+            // ReadOnlyMemory<byte> wrapping a native WASAPI buffer (zero-copy capture path).
+            bufferedWaveProvider.AddSamples(e.BufferSpan);
         }
 
         /// <summary>
         /// Reads data from the WaveInProvider
         /// </summary>
-        public int Read(byte[] buffer, int offset, int count)
+        public int Read(Span<byte> buffer)
         {
-            return bufferedWaveProvider.Read(buffer, offset, count);
+            return bufferedWaveProvider.Read(buffer);
         }
 
         /// <summary>

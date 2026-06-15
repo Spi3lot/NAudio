@@ -4,7 +4,9 @@
 // -----------------------------------------
 
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using NAudio.CoreAudioApi.Interfaces;
 
 namespace NAudio.CoreAudioApi
@@ -15,18 +17,49 @@ namespace NAudio.CoreAudioApi
     /// </summary>
     public class AudioSessionControl : IDisposable
     {
-        private readonly IAudioSessionControl audioSessionControlInterface;
-        private readonly IAudioSessionControl2 audioSessionControlInterface2;
-        private AudioSessionEventsCallback audioSessionEventCallback;
+        private static readonly Guid IID_IAudioSessionEvents = new Guid("24918ACC-64B3-37C1-8CA9-74A66E9957A8");
+
+        private IAudioSessionControl audioSessionControlInterface;
+        private IAudioSessionControl2 audioSessionControlInterface2;
+        private readonly bool ownsInterface;
+        private readonly Dictionary<IAudioSessionEventsHandler, AudioSessionEventsCallback> audioSessionEventCallbacks = new();
+        private readonly object eventCallbackLock = new();
+
+        // ComWrappers CCWs return a distinct IntPtr per interface (and a separate vtable
+        // for IUnknown). Registration APIs that expect IAudioSessionEvents* must receive
+        // the QI'd interface pointer, not the raw IUnknown — passing IUnknown dispatches
+        // against the wrong vtable on the WASAPI worker thread (STATUS_ACCESS_VIOLATION).
+        private static IntPtr QueryEventsInterface(AudioSessionEventsCallback callback)
+        {
+            var unknownPtr = ComActivation.ComWrappers.GetOrCreateComInterfaceForObject(callback, CreateComInterfaceFlags.None);
+            try
+            {
+                Marshal.ThrowExceptionForHR(Marshal.QueryInterface(unknownPtr, in IID_IAudioSessionEvents, out var ifacePtr));
+                return ifacePtr;
+            }
+            finally
+            {
+                Marshal.Release(unknownPtr);
+            }
+        }
 
         /// <summary>
-        /// Constructor.
+        /// Creates a new AudioSessionControl — ownership of the COM pointer is transferred.
         /// </summary>
-        /// <param name="audioSessionControl"></param>
-        public AudioSessionControl(IAudioSessionControl audioSessionControl)
+        /// <param name="nativePointer">Raw COM pointer — ownership is transferred to this instance</param>
+        internal AudioSessionControl(IntPtr nativePointer)
         {
-            audioSessionControlInterface = audioSessionControl;
-            audioSessionControlInterface2 = audioSessionControl as IAudioSessionControl2;
+            try
+            {
+                audioSessionControlInterface = (IAudioSessionControl)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                    nativePointer, CreateObjectFlags.UniqueInstance);
+            }
+            finally
+            {
+                Marshal.Release(nativePointer);
+            }
+            ownsInterface = true;
+            audioSessionControlInterface2 = audioSessionControlInterface as IAudioSessionControl2;
 
             if (audioSessionControlInterface is IAudioMeterInformation meters)
                 AudioMeterInformation = new AudioMeterInformation(meters);
@@ -34,30 +67,55 @@ namespace NAudio.CoreAudioApi
                 SimpleAudioVolume = new SimpleAudioVolume(volume);
         }
 
-        #region IDisposable Members
+        /// <summary>
+        /// Creates a new AudioSessionControl from a borrowed interface (e.g. COM callback).
+        /// This instance does not own the COM pointer.
+        /// </summary>
+        /// <param name="borrowed">IAudioSessionControl obtained from a COM callback</param>
+        internal AudioSessionControl(IAudioSessionControl borrowed)
+        {
+            audioSessionControlInterface = borrowed;
+            audioSessionControlInterface2 = borrowed as IAudioSessionControl2;
+            ownsInterface = false;
+
+            if (audioSessionControlInterface is IAudioMeterInformation meters)
+                AudioMeterInformation = new AudioMeterInformation(meters);
+            if (audioSessionControlInterface is ISimpleAudioVolume volume)
+                SimpleAudioVolume = new SimpleAudioVolume(volume);
+        }
 
         /// <summary>
         /// Dispose
         /// </summary>
         public void Dispose()
         {
-            if (audioSessionEventCallback != null)
+            lock (eventCallbackLock)
             {
-                Marshal.ThrowExceptionForHR(audioSessionControlInterface.UnregisterAudioSessionNotification(audioSessionEventCallback));
-                audioSessionEventCallback = null;
+                foreach (var callback in audioSessionEventCallbacks.Values)
+                {
+                    var ptr = QueryEventsInterface(callback);
+                    try
+                    {
+                        audioSessionControlInterface.UnregisterAudioSessionNotification(ptr);
+                    }
+                    finally
+                    {
+                        Marshal.Release(ptr);
+                    }
+                }
+                audioSessionEventCallbacks.Clear();
+            }
+            if (audioSessionControlInterface != null)
+            {
+                if (ownsInterface && (object)audioSessionControlInterface is ComObject co)
+                {
+                    co.FinalRelease();
+                }
+                audioSessionControlInterface = null;
+                audioSessionControlInterface2 = null;
             }
             GC.SuppressFinalize(this);
         }
-        
-        /// <summary>
-        /// Finalizer
-        /// </summary>
-        ~AudioSessionControl()
-        {
-            Dispose();
-        }
-
-        #endregion
 
         /// <summary>
         /// Audio meter information of the audio session.
@@ -76,7 +134,7 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(audioSessionControlInterface.GetState(out var state));
+                CoreAudioException.ThrowIfFailed(audioSessionControlInterface.GetState(out var state));
 
                 return state;
             }
@@ -89,7 +147,7 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(audioSessionControlInterface.GetDisplayName(out var displayName));
+                CoreAudioException.ThrowIfFailed(audioSessionControlInterface.GetDisplayName(out var displayName));
 
                 return displayName;
             }
@@ -97,7 +155,7 @@ namespace NAudio.CoreAudioApi
             {
                 if (value != String.Empty)
                 {
-                    Marshal.ThrowExceptionForHR(audioSessionControlInterface.SetDisplayName(value, Guid.Empty));
+                    CoreAudioException.ThrowIfFailed(audioSessionControlInterface.SetDisplayName(value, Guid.Empty));
                 }
             }
         }
@@ -109,7 +167,7 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(audioSessionControlInterface.GetIconPath(out var iconPath));
+                CoreAudioException.ThrowIfFailed(audioSessionControlInterface.GetIconPath(out var iconPath));
 
                 return iconPath;
             }
@@ -117,7 +175,7 @@ namespace NAudio.CoreAudioApi
             {
                 if (value != String.Empty)
                 {
-                    Marshal.ThrowExceptionForHR(audioSessionControlInterface.SetIconPath(value, Guid.Empty));
+                    CoreAudioException.ThrowIfFailed(audioSessionControlInterface.SetIconPath(value, Guid.Empty));
                 }
             }
         }
@@ -130,7 +188,7 @@ namespace NAudio.CoreAudioApi
             get
             {
                 if (audioSessionControlInterface2 == null) throw new InvalidOperationException("Not supported on this version of Windows");
-                Marshal.ThrowExceptionForHR(audioSessionControlInterface2.GetSessionIdentifier(out var str));
+                CoreAudioException.ThrowIfFailed(audioSessionControlInterface2.GetSessionIdentifier(out var str));
                 return str;
             }
         }
@@ -143,7 +201,7 @@ namespace NAudio.CoreAudioApi
             get
             {
                 if (audioSessionControlInterface2 == null) throw new InvalidOperationException("Not supported on this version of Windows");
-                Marshal.ThrowExceptionForHR(audioSessionControlInterface2.GetSessionInstanceIdentifier(out var str));
+                CoreAudioException.ThrowIfFailed(audioSessionControlInterface2.GetSessionInstanceIdentifier(out var str));
                 return str;
             }
         }
@@ -156,7 +214,7 @@ namespace NAudio.CoreAudioApi
             get
             {
                 if (audioSessionControlInterface2 == null) throw new InvalidOperationException("Not supported on this version of Windows");
-                Marshal.ThrowExceptionForHR(audioSessionControlInterface2.GetProcessId(out var pid));
+                CoreAudioException.ThrowIfFailed(audioSessionControlInterface2.GetProcessId(out var pid));
                 return pid;
             }
         }
@@ -179,7 +237,7 @@ namespace NAudio.CoreAudioApi
         /// <returns></returns>
         public Guid GetGroupingParam()
         {
-            Marshal.ThrowExceptionForHR(audioSessionControlInterface.GetGroupingParam(out var groupingId));
+            CoreAudioException.ThrowIfFailed(audioSessionControlInterface.GetGroupingParam(out var groupingId));
 
             return groupingId;
         }
@@ -191,31 +249,59 @@ namespace NAudio.CoreAudioApi
         /// <param name="context"></param>
         public void SetGroupingParam(Guid groupingId, Guid context)
         {
-            Marshal.ThrowExceptionForHR(audioSessionControlInterface.SetGroupingParam(groupingId, context));
+            CoreAudioException.ThrowIfFailed(audioSessionControlInterface.SetGroupingParam(groupingId, context));
         }
 
         /// <summary>
-        /// Registers an even client for callbacks
+        /// Registers an event client for callbacks. Multiple clients can be registered;
+        /// registering a client that is already registered has no effect.
         /// </summary>
-        /// <param name="eventClient"></param>
+        /// <param name="eventClient">The handler to register.</param>
         public void RegisterEventClient(IAudioSessionEventsHandler eventClient)
         {
-            // we could have an array or list of listeners if we like
-            audioSessionEventCallback = new AudioSessionEventsCallback(eventClient);
-            Marshal.ThrowExceptionForHR(audioSessionControlInterface.RegisterAudioSessionNotification(audioSessionEventCallback));
+            lock (eventCallbackLock)
+            {
+                if (audioSessionEventCallbacks.ContainsKey(eventClient))
+                {
+                    return;
+                }
+                var callback = new AudioSessionEventsCallback(eventClient);
+                var ptr = QueryEventsInterface(callback);
+                try
+                {
+                    CoreAudioException.ThrowIfFailed(audioSessionControlInterface.RegisterAudioSessionNotification(ptr));
+                }
+                finally
+                {
+                    Marshal.Release(ptr);
+                }
+                audioSessionEventCallbacks.Add(eventClient, callback);
+            }
         }
 
         /// <summary>
-        /// Unregisters an event client from receiving callbacks
+        /// Unregisters an event client from receiving callbacks. Unregistering a client that
+        /// is not registered has no effect.
         /// </summary>
-        /// <param name="eventClient"></param>
+        /// <param name="eventClient">The handler to unregister.</param>
         public void UnRegisterEventClient(IAudioSessionEventsHandler eventClient)
         {
-            // if one is registered, let it go
-            if (audioSessionEventCallback != null)
+            lock (eventCallbackLock)
             {
-                Marshal.ThrowExceptionForHR(audioSessionControlInterface.UnregisterAudioSessionNotification(audioSessionEventCallback));
-                audioSessionEventCallback = null;
+                if (!audioSessionEventCallbacks.TryGetValue(eventClient, out var callback))
+                {
+                    return;
+                }
+                var ptr = QueryEventsInterface(callback);
+                try
+                {
+                    CoreAudioException.ThrowIfFailed(audioSessionControlInterface.UnregisterAudioSessionNotification(ptr));
+                }
+                finally
+                {
+                    Marshal.Release(ptr);
+                }
+                audioSessionEventCallbacks.Remove(eventClient);
             }
         }
     }

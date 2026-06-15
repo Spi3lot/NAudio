@@ -3,9 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.ComTypes;
+using System.Runtime.InteropServices.Marshalling;
 using NAudio.MediaFoundation;
 using NAudio.Utils;
+using NAudio.CoreAudioApi;
+using NAudio.MediaFoundation.Interfaces;
 
 namespace NAudio.Wave
 {
@@ -24,16 +26,24 @@ namespace NAudio.Wave
         /// <returns>An array of available bitrates in average bits per second</returns>
         public static int[] GetEncodeBitrates(Guid audioSubtype, int sampleRate, int channels)
         {
-            return GetOutputMediaTypes(audioSubtype)
-                .Where(mt => mt.SampleRate == sampleRate && mt.ChannelCount == channels)
-                .Select(mt => mt.AverageBytesPerSecond*8)
-                .Distinct()
-                .OrderBy(br => br)
-                .ToArray();
+            var mediaTypes = GetOutputMediaTypes(audioSubtype);
+            try
+            {
+                return mediaTypes
+                    .Where(mt => mt.SampleRate == sampleRate && mt.ChannelCount == channels)
+                    .Select(mt => mt.AverageBytesPerSecond * 8)
+                    .Distinct()
+                    .OrderBy(br => br)
+                    .ToArray();
+            }
+            finally
+            {
+                foreach (var mt in mediaTypes) mt.Dispose();
+            }
         }
 
         /// <summary>
-        /// Gets all the available media types for a particular 
+        /// Gets all the available media types for a particular
         /// </summary>
         /// <param name="audioSubtype">Audio subtype - a value from the AudioSubtypes class</param>
         /// <returns>An array of available media types that can be encoded with this subtype</returns>
@@ -43,47 +53,56 @@ namespace NAudio.Wave
             IMFCollection availableTypes;
             try
             {
-                MediaFoundationInterop.MFTranscodeGetAudioOutputAvailableTypes(
-                    audioSubtype, _MFT_ENUM_FLAG.MFT_ENUM_FLAG_ALL, null, out availableTypes);
+                availableTypes = MediaFoundationApi.GetAudioOutputAvailableTypes(
+                    audioSubtype, MftEnumFlags.All);
             }
             catch (COMException c)
             {
-                if (c.GetHResult() == MediaFoundationErrors.MF_E_NOT_FOUND)
+                int hr = c.GetHResult();
+                // Windows returns MF_E_TOPO_CODEC_NOT_FOUND for audio subtypes that have
+                // no encoder MFT registered (e.g. OPUS on Windows 10/11 — it's a decode-only
+                // format in MF). Older Windows or other lookup failures surface as MF_E_NOT_FOUND.
+                // Either way it means "no encoder available", so return empty.
+                if (hr == MediaFoundationErrors.MF_E_NOT_FOUND ||
+                    hr == MediaFoundationErrors.MF_E_TOPO_CODEC_NOT_FOUND)
                 {
-                    // Don't worry if we didn't find any - just means no encoder available for this type
                     return new MediaType[0];
                 }
-                else
-                {
-                    throw;
-                }
+                throw;
             }
-            availableTypes.GetElementCount(out int count);
-            var mediaTypes = new List<MediaType>(count);
-            for (int n = 0; n < count; n++)
+            try
             {
-                availableTypes.GetElement(n, out object mediaTypeObject);
-                var mediaType = (IMFMediaType)mediaTypeObject;
-                mediaTypes.Add(new MediaType(mediaType));
+                MediaFoundationException.ThrowIfFailed(availableTypes.GetElementCount(out int count));
+                var mediaTypes = new List<MediaType>(count);
+                for (int n = 0; n < count; n++)
+                {
+                    MediaFoundationException.ThrowIfFailed(availableTypes.GetElement(n, out IntPtr mediaTypePtr));
+                    var mediaTypeRcw = (IMFMediaType)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                        mediaTypePtr, CreateObjectFlags.UniqueInstance);
+                    mediaTypes.Add(new MediaType(mediaTypePtr, mediaTypeRcw));
+                }
+                return mediaTypes.ToArray();
             }
-            Marshal.ReleaseComObject(availableTypes);
-            return mediaTypes.ToArray();
+            finally
+            {
+                ((ComObject)(object)availableTypes).FinalRelease();
+            }
         }
 
         /// <summary>
         /// Helper function to simplify encoding Window Media Audio
         /// Should be supported on Vista and above (not tested)
         /// </summary>
-        /// <param name="inputProvider">Input provider, must be PCM</param>
+        /// <param name="inputSource">Input audio source, must be PCM</param>
         /// <param name="outputFile">Output file path, should end with .wma</param>
         /// <param name="desiredBitRate">Desired bitrate. Use GetEncodeBitrates to find the possibilities for your input type</param>
-        public static void EncodeToWma(IWaveProvider inputProvider, string outputFile, int desiredBitRate = 192000)
+        public static void EncodeToWma(IWaveProvider inputSource, string outputFile, int desiredBitRate = 192000)
         {
-            var mediaType = SelectMediaType(AudioSubtypes.MFAudioFormat_WMAudioV8, inputProvider.WaveFormat, desiredBitRate);
+            var mediaType = SelectMediaType(AudioSubtypes.MFAudioFormat_WMAudioV8, inputSource.WaveFormat, desiredBitRate);
             if (mediaType == null) throw new InvalidOperationException("No suitable WMA encoders available");
             using (var encoder = new MediaFoundationEncoder(mediaType))
             {
-                encoder.Encode(outputFile, inputProvider);
+                encoder.Encode(outputFile, inputSource);
             }
         }
 
@@ -91,14 +110,14 @@ namespace NAudio.Wave
         /// Helper function to simplify encoding Window Media Audio
         /// Should be supported on Vista and above (not tested)
         /// </summary>
-        /// <param name="inputProvider">Input provider, must be PCM</param>
+        /// <param name="inputSource">Input audio source, must be PCM</param>
         /// <param name="outputStream">Output stream</param>
         /// <param name="desiredBitRate">Desired bitrate. Use GetEncodeBitrates to find the possibilities for your input type</param>
-        public static void EncodeToWma(IWaveProvider inputProvider, Stream outputStream, int desiredBitRate = 192000) {
-            var mediaType = SelectMediaType(AudioSubtypes.MFAudioFormat_WMAudioV8, inputProvider.WaveFormat, desiredBitRate);
+        public static void EncodeToWma(IWaveProvider inputSource, Stream outputStream, int desiredBitRate = 192000) {
+            var mediaType = SelectMediaType(AudioSubtypes.MFAudioFormat_WMAudioV8, inputSource.WaveFormat, desiredBitRate);
             if (mediaType == null) throw new InvalidOperationException("No suitable WMA encoders available");
             using (var encoder = new MediaFoundationEncoder(mediaType)) {
-                encoder.Encode(outputStream, inputProvider, TranscodeContainerTypes.MFTranscodeContainerType_ASF);
+                encoder.Encode(outputStream, inputSource, TranscodeContainerTypes.MFTranscodeContainerType_ASF);
             }
         }
 
@@ -106,16 +125,16 @@ namespace NAudio.Wave
         /// Helper function to simplify encoding to MP3
         /// By default, will only be available on Windows 8 and above
         /// </summary>
-        /// <param name="inputProvider">Input provider, must be PCM</param>
+        /// <param name="inputSource">Input audio source, must be PCM</param>
         /// <param name="outputFile">Output file path, should end with .mp3</param>
         /// <param name="desiredBitRate">Desired bitrate. Use GetEncodeBitrates to find the possibilities for your input type</param>
-        public static void EncodeToMp3(IWaveProvider inputProvider, string outputFile, int desiredBitRate = 192000)
+        public static void EncodeToMp3(IWaveProvider inputSource, string outputFile, int desiredBitRate = 192000)
         {
-            var mediaType = SelectMediaType(AudioSubtypes.MFAudioFormat_MP3, inputProvider.WaveFormat, desiredBitRate);
+            var mediaType = SelectMediaType(AudioSubtypes.MFAudioFormat_MP3, inputSource.WaveFormat, desiredBitRate);
             if (mediaType == null) throw new InvalidOperationException("No suitable MP3 encoders available");
             using (var encoder = new MediaFoundationEncoder(mediaType))
             {
-                encoder.Encode(outputFile, inputProvider);
+                encoder.Encode(outputFile, inputSource);
             }
         }
 
@@ -123,15 +142,15 @@ namespace NAudio.Wave
         /// Helper function to simplify encoding to MP3
         /// By default, will only be available on Windows 8 and above
         /// </summary>
-        /// <param name="inputProvider">Input provider, must be PCM</param>
+        /// <param name="inputSource">Input audio source, must be PCM</param>
         /// <param name="outputStream">Output stream</param>
         /// <param name="desiredBitRate">Desired bitrate. Use GetEncodeBitrates to find the possibilities for your input type</param>
-        public static void EncodeToMp3(IWaveProvider inputProvider, Stream outputStream, int desiredBitRate = 192000) 
+        public static void EncodeToMp3(IWaveProvider inputSource, Stream outputStream, int desiredBitRate = 192000)
         {
-            var mediaType = SelectMediaType(AudioSubtypes.MFAudioFormat_MP3, inputProvider.WaveFormat, desiredBitRate);
+            var mediaType = SelectMediaType(AudioSubtypes.MFAudioFormat_MP3, inputSource.WaveFormat, desiredBitRate);
             if (mediaType == null) throw new InvalidOperationException("No suitable MP3 encoders available");
             using (var encoder = new MediaFoundationEncoder(mediaType)) {
-                encoder.Encode(outputStream, inputProvider, TranscodeContainerTypes.MFTranscodeContainerType_MP3);
+                encoder.Encode(outputStream, inputSource, TranscodeContainerTypes.MFTranscodeContainerType_MP3);
             }
         }
 
@@ -139,20 +158,16 @@ namespace NAudio.Wave
         /// Helper function to simplify encoding to AAC
         /// By default, will only be available on Windows 7 and above
         /// </summary>
-        /// <param name="inputProvider">Input provider, must be PCM</param>
+        /// <param name="inputSource">Input audio source, must be PCM</param>
         /// <param name="outputFile">Output file path, should end with .mp4 (or .aac on Windows 8)</param>
         /// <param name="desiredBitRate">Desired bitrate. Use GetEncodeBitrates to find the possibilities for your input type</param>
-        public static void EncodeToAac(IWaveProvider inputProvider, string outputFile, int desiredBitRate = 192000)
+        public static void EncodeToAac(IWaveProvider inputSource, string outputFile, int desiredBitRate = 192000)
         {
-            // Information on configuring an AAC media type can be found here:
-            // http://msdn.microsoft.com/en-gb/library/windows/desktop/dd742785%28v=vs.85%29.aspx
-            var mediaType = SelectMediaType(AudioSubtypes.MFAudioFormat_AAC, inputProvider.WaveFormat, desiredBitRate);
+            var mediaType = SelectMediaType(AudioSubtypes.MFAudioFormat_AAC, inputSource.WaveFormat, desiredBitRate);
             if (mediaType == null) throw new InvalidOperationException("No suitable AAC encoders available");
             using (var encoder = new MediaFoundationEncoder(mediaType))
             {
-                // should AAC container have ADTS, or is that just for ADTS?
-                // http://www.hydrogenaudio.org/forums/index.php?showtopic=97442
-                encoder.Encode(outputFile, inputProvider);
+                encoder.Encode(outputFile, inputSource);
             }
         }
 
@@ -160,18 +175,64 @@ namespace NAudio.Wave
         /// Helper function to simplify encoding to AAC
         /// By default, will only be available on Windows 7 and above
         /// </summary>
-        /// <param name="inputProvider">Input provider, must be PCM</param>
+        /// <param name="inputSource">Input audio source, must be PCM</param>
         /// <param name="outputStream">Output stream</param>
         /// <param name="desiredBitRate">Desired bitrate. Use GetEncodeBitrates to find the possibilities for your input type</param>
-        public static void EncodeToAac(IWaveProvider inputProvider, Stream outputStream, int desiredBitRate = 192000) {
-            // Information on configuring an AAC media type can be found here:
-            // http://msdn.microsoft.com/en-gb/library/windows/desktop/dd742785%28v=vs.85%29.aspx
-            var mediaType = SelectMediaType(AudioSubtypes.MFAudioFormat_AAC, inputProvider.WaveFormat, desiredBitRate);
+        public static void EncodeToAac(IWaveProvider inputSource, Stream outputStream, int desiredBitRate = 192000) {
+            var mediaType = SelectMediaType(AudioSubtypes.MFAudioFormat_AAC, inputSource.WaveFormat, desiredBitRate);
             if (mediaType == null) throw new InvalidOperationException("No suitable AAC encoders available");
             using (var encoder = new MediaFoundationEncoder(mediaType)) {
-                // should AAC container have ADTS, or is that just for ADTS?
-                // http://www.hydrogenaudio.org/forums/index.php?showtopic=97442
-                encoder.Encode(outputStream, inputProvider, TranscodeContainerTypes.MFTranscodeContainerType_MPEG4);
+                encoder.Encode(outputStream, inputSource, TranscodeContainerTypes.MFTranscodeContainerType_MPEG4);
+            }
+        }
+
+        /// <summary>
+        /// Helper function to simplify encoding to FLAC (Free Lossless Audio Codec).
+        /// Available on Windows 10 and above. FLAC is lossless, so there is no bitrate
+        /// to choose - the encoder media type is selected to match the input's sample
+        /// rate, channels, and (where possible) bit depth. If the encoder only offers
+        /// a different bit depth for the input rate/channels, the closest available is
+        /// used; supply PCM input at that depth for best results.
+        /// </summary>
+        /// <param name="inputSource">Input audio source, must be PCM</param>
+        /// <param name="outputFile">Output file path, should end with .flac</param>
+        public static void EncodeToFlac(IWaveProvider inputSource, string outputFile)
+        {
+            var mediaType = SelectLosslessMediaType(AudioSubtypes.MFAudioFormat_FLAC, inputSource.WaveFormat);
+            if (mediaType == null) throw new InvalidOperationException("No suitable FLAC encoders available");
+            using var encoder = new MediaFoundationEncoder(mediaType);
+            encoder.Encode(outputFile, inputSource);
+        }
+
+        /// <summary>
+        /// Picks the encoder media type for a lossless codec (currently FLAC). Prefers
+        /// an exact match on rate, channels, and bps; falls back to rate + channels
+        /// if no bps match exists. Disposes the rejected media types and returns
+        /// null if nothing matches.
+        /// </summary>
+        private static MediaType SelectLosslessMediaType(Guid audioSubtype, WaveFormat inputFormat)
+        {
+            MediaFoundationApi.Startup();
+            var allTypes = GetOutputMediaTypes(audioSubtype);
+            try
+            {
+                var selected = allTypes.FirstOrDefault(mt =>
+                    mt.SampleRate == inputFormat.SampleRate
+                    && mt.ChannelCount == inputFormat.Channels
+                    && mt.BitsPerSample == inputFormat.BitsPerSample)
+                    ?? allTypes.FirstOrDefault(mt =>
+                        mt.SampleRate == inputFormat.SampleRate
+                        && mt.ChannelCount == inputFormat.Channels);
+                foreach (var mt in allTypes)
+                {
+                    if (!ReferenceEquals(mt, selected)) mt.Dispose();
+                }
+                return selected;
+            }
+            catch
+            {
+                foreach (var mt in allTypes) mt.Dispose();
+                throw;
             }
         }
 
@@ -185,12 +246,26 @@ namespace NAudio.Wave
         public static MediaType SelectMediaType(Guid audioSubtype, WaveFormat inputFormat, int desiredBitRate)
         {
             MediaFoundationApi.Startup();
-            return GetOutputMediaTypes(audioSubtype)
-                .Where(mt => mt.SampleRate == inputFormat.SampleRate && mt.ChannelCount == inputFormat.Channels)
-                .Select(mt => new { MediaType = mt, Delta = Math.Abs(desiredBitRate - mt.AverageBytesPerSecond * 8) } )
-                .OrderBy(mt => mt.Delta)
-                .Select(mt => mt.MediaType)
-                .FirstOrDefault();
+            var allTypes = GetOutputMediaTypes(audioSubtype);
+            try
+            {
+                var selected = allTypes
+                    .Where(mt => mt.SampleRate == inputFormat.SampleRate && mt.ChannelCount == inputFormat.Channels)
+                    .Select(mt => new { MediaType = mt, Delta = Math.Abs(desiredBitRate - mt.AverageBytesPerSecond * 8) })
+                    .OrderBy(mt => mt.Delta)
+                    .Select(mt => mt.MediaType)
+                    .FirstOrDefault();
+                foreach (var mt in allTypes)
+                {
+                    if (!ReferenceEquals(mt, selected)) mt.Dispose();
+                }
+                return selected;
+            }
+            catch
+            {
+                foreach (var mt in allTypes) mt.Dispose();
+                throw;
+            }
         }
 
         /// <summary>
@@ -211,147 +286,138 @@ namespace NAudio.Wave
         }
 
         /// <summary>
-        /// Encodes a file
+        /// Encodes to a file. Reads directly into the MF buffer via span for zero-copy encoding.
+        /// Accepts any <see cref="IWaveProvider"/> (including <see cref="WaveStream"/> subclasses).
         /// </summary>
         /// <param name="outputFile">Output filename (container type is deduced from the filename)</param>
-        /// <param name="inputProvider">Input provider (should be PCM, some encoders will also allow IEEE float)</param>
-        public void Encode(string outputFile, IWaveProvider inputProvider)
+        /// <param name="inputSource">Input audio source (should be PCM, some encoders will also allow IEEE float)</param>
+        public void Encode(string outputFile, IWaveProvider inputSource)
         {
-            if (inputProvider.WaveFormat.Encoding != WaveFormatEncoding.Pcm && inputProvider.WaveFormat.Encoding != WaveFormatEncoding.IeeeFloat)
+            if (inputSource.WaveFormat.Encoding != WaveFormatEncoding.Pcm && inputSource.WaveFormat.Encoding != WaveFormatEncoding.IeeeFloat)
             {
                 throw new ArgumentException("Encode input format must be PCM or IEEE float");
             }
 
-            var inputMediaType = new MediaType(inputProvider.WaveFormat);
-
+            using var inputMediaType = new MediaType(inputSource.WaveFormat);
             var writer = CreateSinkWriter(outputFile);
             try
             {
-                writer.AddStream(outputMediaType.MediaFoundationObject, out int streamIndex);
-
-                // n.b. can get 0xC00D36B4 - MF_E_INVALIDMEDIATYPE here
-                writer.SetInputMediaType(streamIndex, inputMediaType.MediaFoundationObject, null);
-
-                PerformEncode(writer, streamIndex, inputProvider);
+                MediaFoundationException.ThrowIfFailed(
+                    writer.AddStream(outputMediaType.MediaFoundationObject, out int streamIndex));
+                MediaFoundationException.ThrowIfFailed(
+                    writer.SetInputMediaType(streamIndex, inputMediaType.MediaFoundationObject, IntPtr.Zero));
+                PerformEncode(writer, streamIndex, inputSource);
             }
             finally
             {
-                if (writer != null)
-                {
-                    Marshal.ReleaseComObject(writer);
-                }
-                if (inputMediaType.MediaFoundationObject != null)
-                {
-                    Marshal.ReleaseComObject(inputMediaType.MediaFoundationObject);
-                }
+                ((ComObject)(object)writer).FinalRelease();
             }
         }
 
         /// <summary>
-        /// Encodes a file
+        /// Encodes to a stream. Reads directly into the MF buffer via span for zero-copy encoding.
+        /// Accepts any <see cref="IWaveProvider"/> (including <see cref="WaveStream"/> subclasses).
         /// </summary>
         /// <param name="outputStream">Output stream</param>
-        /// <param name="inputProvider">Input provider (should be PCM, some encoders will also allow IEEE float)</param>
+        /// <param name="inputSource">Input audio source (should be PCM, some encoders will also allow IEEE float)</param>
         /// <param name="transcodeContainerType">One of <see cref="TranscodeContainerTypes"/></param>
-        public void Encode(Stream outputStream, IWaveProvider inputProvider, Guid transcodeContainerType) 
+        public void Encode(Stream outputStream, IWaveProvider inputSource, Guid transcodeContainerType)
         {
-            if (inputProvider.WaveFormat.Encoding != WaveFormatEncoding.Pcm && inputProvider.WaveFormat.Encoding != WaveFormatEncoding.IeeeFloat) 
+            if (inputSource.WaveFormat.Encoding != WaveFormatEncoding.Pcm && inputSource.WaveFormat.Encoding != WaveFormatEncoding.IeeeFloat)
             {
                 throw new ArgumentException("Encode input format must be PCM or IEEE float");
             }
 
-            var inputMediaType = new MediaType(inputProvider.WaveFormat);
-
-            var writer = CreateSinkWriter(new ComStream(outputStream), transcodeContainerType);
-            try 
+            using var inputMediaType = new MediaType(inputSource.WaveFormat);
+            using var wrapper = new MfByteStreamFromStream(outputStream, false);
+            var writer = CreateSinkWriter(wrapper, transcodeContainerType);
+            try
             {
-				writer.AddStream(outputMediaType.MediaFoundationObject, out int streamIndex);
-
-				// n.b. can get 0xC00D36B4 - MF_E_INVALIDMEDIATYPE here
-				writer.SetInputMediaType(streamIndex, inputMediaType.MediaFoundationObject, null);
-
-                PerformEncode(writer, streamIndex, inputProvider);
-            } 
-            finally 
+                MediaFoundationException.ThrowIfFailed(
+                    writer.AddStream(outputMediaType.MediaFoundationObject, out int streamIndex));
+                MediaFoundationException.ThrowIfFailed(
+                    writer.SetInputMediaType(streamIndex, inputMediaType.MediaFoundationObject, IntPtr.Zero));
+                PerformEncode(writer, streamIndex, inputSource);
+            }
+            finally
             {
-                if (writer != null)
-                {
-                    Marshal.ReleaseComObject(writer);
-                }
-                if (inputMediaType.MediaFoundationObject != null)
-                {
-                    Marshal.ReleaseComObject(inputMediaType.MediaFoundationObject);
-                }
+                ((ComObject)(object)writer).FinalRelease();
             }
         }
 
         private static IMFSinkWriter CreateSinkWriter(string outputFile)
         {
             // n.b. could try specifying the container type using attributes, but I think
-            // it does a decent job of working it out from the file extension 
+            // it does a decent job of working it out from the file extension
             // n.b. AAC encode on Win 8 can have AAC extension, but use MP4 in win 7
             // http://msdn.microsoft.com/en-gb/library/windows/desktop/dd389284%28v=vs.85%29.aspx
             IMFSinkWriter writer;
-            var attributes = MediaFoundationApi.CreateAttributes(1);
-            attributes.SetUINT32(MediaFoundationAttributes.MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1);
-        
+            var (attributesPtr, attributes) = MediaFoundationApi.CreateAttributes(1);
             try
             {
-                MediaFoundationInterop.MFCreateSinkWriterFromURL(outputFile, null, attributes, out writer);
-            }
-            catch (COMException e)
-            {
-                if (e.GetHResult() == MediaFoundationErrors.MF_E_NOT_FOUND)
+                MediaFoundationException.ThrowIfFailed(
+                    attributes.SetUINT32(MediaFoundationAttributes.MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1));
+                try
                 {
-                    throw new ArgumentException("Was not able to create a sink writer for this file extension");
+                    writer = MediaFoundationApi.CreateSinkWriterFromUrl(outputFile, IntPtr.Zero, attributesPtr);
                 }
-                throw;
+                catch (COMException e)
+                {
+                    if (e.GetHResult() == MediaFoundationErrors.MF_E_NOT_FOUND)
+                    {
+                        throw new ArgumentException("Was not able to create a sink writer for this file extension");
+                    }
+                    throw;
+                }
             }
             finally
             {
-                Marshal.ReleaseComObject(attributes);
+                ComActivation.ReleaseBoth(attributes, attributesPtr);
             }
             return writer;
         }
 
-        private static IMFSinkWriter CreateSinkWriter(IStream outputStream, Guid TranscodeContainerType) 
+        private static IMFSinkWriter CreateSinkWriter(MfByteStreamFromStream outputStream, Guid transcodeContainerType)
         {
             // n.b. could try specifying the container type using attributes, but I think
-            // it does a decent job of working it out from the file extension 
+            // it does a decent job of working it out from the file extension
             // n.b. AAC encode on Win 8 can have AAC extension, but use MP4 in win 7
             // http://msdn.microsoft.com/en-gb/library/windows/desktop/dd389284%28v=vs.85%29.aspx
             IMFSinkWriter writer;
-            var attributes = MediaFoundationApi.CreateAttributes(1);
-            attributes.SetGUID(MediaFoundationAttributes.MF_TRANSCODE_CONTAINERTYPE, TranscodeContainerType);
-
+            var (attributesPtr, attributes) = MediaFoundationApi.CreateAttributes(1);
+            IntPtr byteStreamPtr = IntPtr.Zero;
             try
             {
-                MediaFoundationInterop.MFCreateMFByteStreamOnStream(outputStream, out var ppByteStream);
-                MediaFoundationInterop.MFCreateSinkWriterFromURL(null, ppByteStream, attributes, out writer);
-            } 
-            finally 
+                MediaFoundationException.ThrowIfFailed(
+                    attributes.SetGUID(MediaFoundationAttributes.MF_TRANSCODE_CONTAINERTYPE, transcodeContainerType));
+                byteStreamPtr = MediaFoundationApi.CreateByteStream(outputStream);
+                writer = MediaFoundationApi.CreateSinkWriterFromUrl(null, byteStreamPtr, attributesPtr);
+            }
+            finally
             {
-                Marshal.ReleaseComObject(attributes);
+                if (byteStreamPtr != IntPtr.Zero) Marshal.Release(byteStreamPtr);
+                ComActivation.ReleaseBoth(attributes, attributesPtr);
             }
             return writer;
         }
 
-        private void PerformEncode(IMFSinkWriter writer, int streamIndex, IWaveProvider inputProvider)
+        private void PerformEncode(IMFSinkWriter writer, int streamIndex, IWaveProvider inputSource)
         {
-            if (DefaultReadBufferSize== 0) DefaultReadBufferSize = inputProvider.WaveFormat.AverageBytesPerSecond * 4;
-            var managedBuffer = new byte[DefaultReadBufferSize];
+            int bufferSize = DefaultReadBufferSize > 0
+                ? DefaultReadBufferSize
+                : inputSource.WaveFormat.AverageBytesPerSecond * 4;
 
-            writer.BeginWriting();
+            MediaFoundationException.ThrowIfFailed(writer.BeginWriting());
 
             long position = 0;
             long duration;
             do
             {
-                duration = ConvertOneBuffer(writer, streamIndex, inputProvider, position, managedBuffer);
+                duration = ConvertOneBuffer(writer, streamIndex, inputSource, position, bufferSize);
                 position += duration;
             } while (duration > 0);
 
-            writer.DoFinalize();
+            MediaFoundationException.ThrowIfFailed(writer.DoFinalize());
         }
 
         private static long BytesToNsPosition(int bytes, WaveFormat waveFormat)
@@ -360,41 +426,42 @@ namespace NAudio.Wave
             return nsPosition;
         }
 
-        private long ConvertOneBuffer(IMFSinkWriter writer, int streamIndex, IWaveProvider inputProvider, long position, byte[] managedBuffer)
+        private unsafe long ConvertOneBuffer(IMFSinkWriter writer, int streamIndex, IWaveProvider inputSource, long position, int bufferSize)
         {
+            IMFSample sample = null;
             long durationConverted = 0;
-            IMFMediaBuffer buffer = MediaFoundationApi.CreateMemoryBuffer(managedBuffer.Length);
-            buffer.GetMaxLength(out var maxLength);
-
-            IMFSample sample = MediaFoundationApi.CreateSample();
-            sample.AddBuffer(buffer);
-
-            int read = inputProvider.Read(managedBuffer, 0, maxLength);
-            if (read > 0)
-            {
-                buffer.Lock(out var ptr, out maxLength, out int currentLength);
-                durationConverted = BytesToNsPosition(read, inputProvider.WaveFormat);
-                Marshal.Copy(managedBuffer, 0, ptr, read);
-                buffer.SetCurrentLength(read);
-                buffer.Unlock();
-                sample.SetSampleTime(position);
-                sample.SetSampleDuration(durationConverted);
-                writer.WriteSample(streamIndex, sample);
-                //writer.Flush(streamIndex);
-            }
+            IntPtr samplePtr = IntPtr.Zero;
             
-            Marshal.ReleaseComObject(sample);
-            Marshal.ReleaseComObject(buffer);
-            return durationConverted;
-        }
+            var (bufferPtr, buffer) = MediaFoundationApi.CreateMemoryBuffer(bufferSize);
+            try
+            {
+                (samplePtr, sample) = MediaFoundationApi.CreateSample();
+                MediaFoundationException.ThrowIfFailed(sample.AddBuffer(bufferPtr));
 
-        /// <summary>
-        /// Disposes this instance
-        /// </summary>
-        /// <param name="disposing"></param>
-        protected void Dispose(bool disposing)
-        {
-            Marshal.ReleaseComObject(outputMediaType.MediaFoundationObject);
+                MediaFoundationException.ThrowIfFailed(buffer.Lock(out var ptr, out int maxLength, out int currentLength));
+                // Read directly into the locked MF buffer via span — no intermediate managed array
+                var span = new Span<byte>((void*)ptr, maxLength);
+                int read = inputSource.Read(span);
+                if (read > 0)
+                {
+                    durationConverted = BytesToNsPosition(read, inputSource.WaveFormat);
+                    MediaFoundationException.ThrowIfFailed(buffer.SetCurrentLength(read));
+                    MediaFoundationException.ThrowIfFailed(buffer.Unlock());
+                    MediaFoundationException.ThrowIfFailed(sample.SetSampleTime(position));
+                    MediaFoundationException.ThrowIfFailed(sample.SetSampleDuration(durationConverted));
+                    MediaFoundationException.ThrowIfFailed(writer.WriteSample(streamIndex, samplePtr));
+                }
+                else
+                {
+                    MediaFoundationException.ThrowIfFailed(buffer.Unlock());
+                }
+                return durationConverted;
+            }
+            finally
+            {
+                ComActivation.ReleaseBoth(sample, samplePtr);
+                ComActivation.ReleaseBoth(buffer, bufferPtr);
+            }
         }
 
         /// <summary>
@@ -402,20 +469,21 @@ namespace NAudio.Wave
         /// </summary>
         public void Dispose()
         {
-            if (!disposed)
+            System.Threading.Monitor.Enter(this);
+            try
             {
-                disposed = true;
-                Dispose(true);
+                // Serialize access to 'disposed'.
+                if (!disposed)
+                {
+                    disposed = true;
+                    outputMediaType.Dispose();
+                }
+                GC.SuppressFinalize(this);
             }
-            GC.SuppressFinalize(this);
-        }
-
-        /// <summary>
-        /// Finalizer
-        /// </summary>
-        ~MediaFoundationEncoder()
-        {
-            Dispose(false);
+            finally
+            {
+                System.Threading.Monitor.Exit(this);
+            }
         }
     }
 }

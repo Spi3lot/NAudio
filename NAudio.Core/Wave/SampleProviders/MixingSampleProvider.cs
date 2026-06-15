@@ -1,11 +1,12 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Numerics.Tensors;
 using NAudio.Utils;
 
 namespace NAudio.Wave.SampleProviders
 {
     /// <summary>
-    /// A sample provider mixer, allowing inputs to be added and removed
+    /// A sample source mixer, allowing inputs to be added and removed
     /// </summary>
     public class MixingSampleProvider : ISampleProvider
     {
@@ -58,16 +59,6 @@ namespace NAudio.Wave.SampleProviders
         /// to write it out to a file.
         /// </summary>
         public bool ReadFully { get; set; }
-
-        /// <summary>
-        /// Adds a WaveProvider as a Mixer input.
-        /// Must be PCM or IEEE float already
-        /// </summary>
-        /// <param name="mixerInput">IWaveProvider mixer input</param>
-        public void AddMixerInput(IWaveProvider mixerInput)
-        {
-            AddMixerInput(SampleProviderConverters.ConvertWaveProviderIntoSampleProvider(mixerInput));
-        }
 
         /// <summary>
         /// Adds a new mixer input
@@ -133,37 +124,45 @@ namespace NAudio.Wave.SampleProviders
         public WaveFormat WaveFormat { get; private set; }
 
         /// <summary>
-        /// Reads samples from this sample provider
+        /// Reads samples from this sample provider into a span
         /// </summary>
-        /// <param name="buffer">Sample buffer</param>
-        /// <param name="offset">Offset into sample buffer</param>
-        /// <param name="count">Number of samples required</param>
-        /// <returns>Number of samples read</returns>
-        public int Read(float[] buffer, int offset, int count)
+        public int Read(Span<float> buffer)
         {
             int outputSamples = 0;
-            sourceBuffer = BufferHelpers.Ensure(sourceBuffer, count);
+            sourceBuffer = BufferHelpers.Ensure(sourceBuffer, buffer.Length);
             lock (sources)
             {
                 int index = sources.Count - 1;
                 while (index >= 0)
                 {
                     var source = sources[index];
-                    int samplesRead = source.Read(sourceBuffer, 0, count);
-                    int outIndex = offset;
-                    for (int n = 0; n < samplesRead; n++)
+                    int samplesRead = source.Read(sourceBuffer.AsSpan(0, buffer.Length));
+                    if (samplesRead > 0)
                     {
-                        if (n >= outputSamples)
+                        var src = sourceBuffer.AsSpan(0, samplesRead);
+                        var dest = buffer.Slice(0, samplesRead);
+                        if (samplesRead <= outputSamples)
                         {
-                            buffer[outIndex++] = sourceBuffer[n];
+                            // Fully overlaps prior output — mix-add.
+                            TensorPrimitives.Add(dest, src, dest);
+                        }
+                        else if (outputSamples == 0)
+                        {
+                            // First source (or only prior sources were empty) — straight copy.
+                            src.CopyTo(dest);
                         }
                         else
                         {
-                            buffer[outIndex++] += sourceBuffer[n];
+                            // This source reached further than any previous — mix-add the overlap,
+                            // then copy the tail that no prior source reached.
+                            var overlapSrc = src.Slice(0, outputSamples);
+                            var overlapDest = dest.Slice(0, outputSamples);
+                            TensorPrimitives.Add(overlapDest, overlapSrc, overlapDest);
+                            src.Slice(outputSamples).CopyTo(dest.Slice(outputSamples));
                         }
                     }
                     outputSamples = Math.Max(samplesRead, outputSamples);
-                    if (samplesRead < count)
+                    if (samplesRead < buffer.Length)
                     {
                         MixerInputEnded?.Invoke(this, new SampleProviderEventArgs(source));
                         sources.RemoveAt(index);
@@ -171,15 +170,10 @@ namespace NAudio.Wave.SampleProviders
                     index--;
                 }
             }
-            // optionally ensure we return a full buffer
-            if (ReadFully && outputSamples < count)
+            if (ReadFully && outputSamples < buffer.Length)
             {
-                int outputIndex = offset + outputSamples;
-                while (outputIndex < offset + count)
-                {
-                    buffer[outputIndex++] = 0;
-                }
-                outputSamples = count;
+                buffer.Slice(outputSamples).Clear();
+                outputSamples = buffer.Length;
             }
             return outputSamples;
         }

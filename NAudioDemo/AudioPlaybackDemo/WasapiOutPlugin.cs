@@ -1,22 +1,27 @@
-﻿using System;
-using System.Linq;
-using NAudio.Wave;
+using System;
 using System.Windows.Forms;
+using NAudio.CoreAudioApi;
+using NAudio.Wave;
 
 namespace NAudioDemo.AudioPlaybackDemo
 {
+    /// <summary>
+    /// Plugin exposing the legacy <see cref="WasapiOut"/> API. Listed alongside
+    /// <see cref="WasapiPlayerPlugin"/> so users can A/B the two code paths.
+    /// </summary>
     class WasapiOutPlugin : IOutputDevicePlugin
     {
         WasapiOutSettingsPanel settingsPanel;
 
         public IWavePlayer CreateDevice(int latency)
         {
-            var wasapi = new WasapiOut(
+#pragma warning disable CS0618 // legacy WasapiOut is intentionally exercised here
+            return new WasapiOut(
                 settingsPanel.SelectedDevice,
                 settingsPanel.ShareMode,
                 settingsPanel.UseEventCallback,
                 latency);
-            return wasapi;
+#pragma warning restore CS0618
         }
 
         public UserControl CreateSettingsPanel()
@@ -25,20 +30,10 @@ namespace NAudioDemo.AudioPlaybackDemo
             return settingsPanel;
         }
 
-        public string Name
-        {
-            get { return "WasapiOut"; }
-        }
+        public string Name => "WasapiOut (legacy)";
 
-        public bool IsAvailable
-        {
-            // supported on Vista and above
-            get { return Environment.OSVersion.Version.Major >= 6; }
-        }
+        public bool IsAvailable => Environment.OSVersion.Version.Major >= 6;
 
-        public int Priority
-        {
-            get { return 1; }
-        }
+        public int Priority => 2;
     }
 }

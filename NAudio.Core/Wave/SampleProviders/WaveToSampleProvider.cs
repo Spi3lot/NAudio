@@ -1,4 +1,5 @@
-﻿using System;
+using System;
+using System.Runtime.InteropServices;
 
 namespace NAudio.Wave.SampleProviders
 {
@@ -24,24 +25,14 @@ namespace NAudio.Wave.SampleProviders
         /// <summary>
         /// Reads from this provider
         /// </summary>
-        public override int Read(float[] buffer, int offset, int count)
+        public override int Read(Span<float> buffer)
         {
-            int bytesNeeded = count * 4;
+            int bytesNeeded = buffer.Length * 4;
             EnsureSourceBuffer(bytesNeeded);
-            int bytesRead = source.Read(sourceBuffer, 0, bytesNeeded);
+            int bytesRead = source.Read(sourceBuffer.AsSpan(0, bytesNeeded));
             int samplesRead = bytesRead / 4;
-            int outputIndex = offset;
-            unsafe
-            {
-                fixed(byte* pBytes = &sourceBuffer[0])
-                {
-                    float* pFloat = (float*)pBytes;
-                    for (int n = 0, i = 0; n < bytesRead; n += 4, i++)
-                    {
-                        buffer[outputIndex++] = *(pFloat + i);
-                    }
-                }
-            }
+            var floatSpan = MemoryMarshal.Cast<byte, float>(sourceBuffer.AsSpan(0, bytesRead));
+            floatSpan.Slice(0, samplesRead).CopyTo(buffer);
             return samplesRead;
         }
     }

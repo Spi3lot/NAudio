@@ -1,127 +1,197 @@
-﻿/*
-  LICENSE
-  -------
-  Copyright (C) 2007 Ray Molenkamp
-
-  This source code is provided 'as-is', without any express or implied
-  warranty.  In no event will the authors be held liable for any damages
-  arising from the use of this source code or the software it produces.
-
-  Permission is granted to anyone to use this source code for any purpose,
-  including commercial applications, and to alter it and redistribute it
-  freely, subject to the following restrictions:
-
-  1. The origin of this source code must not be misrepresented; you must not
-     claim that you wrote the original source code.  If you use this source code
-     in a product, an acknowledgment in the product documentation would be
-     appreciated but is not required.
-  2. Altered source versions must be plainly marked as such, and must not be
-     misrepresented as being the original source code.
-  3. This notice may not be removed or altered from any source distribution.
-*/
-// updated for use in NAudio
 using System;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using NAudio.CoreAudioApi.Interfaces;
 
 namespace NAudio.CoreAudioApi
 {
-
     /// <summary>
-    /// MM Device Enumerator
+    /// Entry point to the Windows Core Audio device enumeration API
+    /// (<c>IMMDeviceEnumerator</c>). Use this to discover audio endpoints,
+    /// resolve the default render or capture device, look up a device by ID,
+    /// and subscribe to endpoint change notifications.
     /// </summary>
     public class MMDeviceEnumerator : IDisposable
     {
+        // CLSID_MMDeviceEnumerator — mmdeviceapi.h
+        private static readonly Guid CLSID_MMDeviceEnumerator = new Guid("BCDE0395-E52F-467C-8E3D-C4579291692E");
+        // IID_IMMDeviceEnumerator — mmdeviceapi.h
+        private static readonly Guid IID_IMMDeviceEnumerator = new Guid("A95664D2-9614-4F35-A746-DE8DB63617E6");
+        // IID_IMMNotificationClient — mmdeviceapi.h
+        private static readonly Guid IID_IMMNotificationClient = new Guid("7991EEC9-7E89-4D85-8390-6C703CEC60C0");
+
         private IMMDeviceEnumerator realEnumerator;
 
         /// <summary>
-        /// Creates a new MM Device Enumerator
+        /// Activates the system <c>MMDeviceEnumerator</c> COM object.
         /// </summary>
+        /// <exception cref="NotSupportedException">
+        /// Thrown on Windows versions earlier than Vista, where Core Audio is not available.
+        /// </exception>
         public MMDeviceEnumerator()
         {
             if (Environment.OSVersion.Version.Major < 6)
             {
-                throw new NotSupportedException("This functionality is only supported on Windows Vista or newer.");
+                throw new NotSupportedException("Core Audio device enumeration requires Windows Vista or newer.");
             }
-            realEnumerator = new MMDeviceEnumeratorComObject() as IMMDeviceEnumerator;
+            realEnumerator = ComActivation.CreateInstance<IMMDeviceEnumerator>(
+                CLSID_MMDeviceEnumerator, IID_IMMDeviceEnumerator);
         }
 
         /// <summary>
-        /// Enumerate Audio Endpoints
+        /// Returns every audio endpoint that matches the supplied direction and state mask.
         /// </summary>
-        /// <param name="dataFlow">Desired DataFlow</param>
-        /// <param name="dwStateMask">State Mask</param>
-        /// <returns>Device Collection</returns>
+        /// <param name="dataFlow">Render, capture, or both.</param>
+        /// <param name="dwStateMask">Bitmask of <see cref="DeviceState"/> values to include.</param>
         public MMDeviceCollection EnumerateAudioEndPoints(DataFlow dataFlow, DeviceState dwStateMask)
         {
-            Marshal.ThrowExceptionForHR(realEnumerator.EnumAudioEndpoints(dataFlow, dwStateMask, out var result));
-            return new MMDeviceCollection(result);
+            CoreAudioException.ThrowIfFailed(realEnumerator.EnumAudioEndpoints(dataFlow, dwStateMask, out var ptr));
+            try
+            {
+                return new MMDeviceCollection((IMMDeviceCollection)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                    ptr, CreateObjectFlags.UniqueInstance));
+            }
+            finally
+            {
+                Marshal.Release(ptr);
+            }
         }
 
         /// <summary>
-        /// Get Default Endpoint
+        /// Returns the default endpoint for the given direction and role.
         /// </summary>
-        /// <param name="dataFlow">Data Flow</param>
-        /// <param name="role">Role</param>
-        /// <returns>Device</returns>
+        /// <exception cref="CoreAudioException">
+        /// Thrown if no default endpoint exists. Use <see cref="HasDefaultAudioEndpoint"/> or
+        /// <see cref="TryGetDefaultAudioEndpoint"/> for the non-throwing variants.
+        /// </exception>
         public MMDevice GetDefaultAudioEndpoint(DataFlow dataFlow, Role role)
         {
-            Marshal.ThrowExceptionForHR(realEnumerator.GetDefaultAudioEndpoint(dataFlow, role, out var device));
-            return new MMDevice(device);
+            CoreAudioException.ThrowIfFailed(realEnumerator.GetDefaultAudioEndpoint(dataFlow, role, out var ptr));
+            return WrapDevicePointer(ptr);
         }
 
         /// <summary>
-        /// Check to see if a default audio end point exists without needing an exception.
+        /// Returns <c>true</c> if a default endpoint exists for the given direction and role,
+        /// without allocating a wrapper or throwing on the common "no default" case.
         /// </summary>
-        /// <param name="dataFlow">Data Flow</param>
-        /// <param name="role">Role</param>
-        /// <returns>True if one exists, and false if one does not exist.</returns>
         public bool HasDefaultAudioEndpoint(DataFlow dataFlow, Role role)
         {
             const int E_NOTFOUND = unchecked((int)0x80070490);
-            int hresult = realEnumerator.GetDefaultAudioEndpoint(dataFlow, role, out var device);
+            int hresult = realEnumerator.GetDefaultAudioEndpoint(dataFlow, role, out var ptr);
             if (hresult == 0x0)
             {
-                Marshal.ReleaseComObject(device);
+                Marshal.Release(ptr);
                 return true;
             }
             if (hresult == E_NOTFOUND)
             {
                 return false;
             }
-            Marshal.ThrowExceptionForHR(hresult);
+            CoreAudioException.ThrowIfFailed(hresult);
             return false;
         }
 
         /// <summary>
-        /// Get device by ID
+        /// Attempts to resolve the default endpoint for the given direction and role.
+        /// Returns <c>false</c> when no default exists, without throwing.
         /// </summary>
-        /// <param name="id">Device ID</param>
-        /// <returns>Device</returns>
+        /// <param name="dataFlow">Render or capture.</param>
+        /// <param name="role">Console, multimedia, or communications role.</param>
+        /// <param name="device">The default device on success; <c>null</c> otherwise.</param>
+        public bool TryGetDefaultAudioEndpoint(DataFlow dataFlow, Role role, out MMDevice device)
+        {
+            const int E_NOTFOUND = unchecked((int)0x80070490);
+            int hresult = realEnumerator.GetDefaultAudioEndpoint(dataFlow, role, out var ptr);
+            if (hresult == 0x0)
+            {
+                device = WrapDevicePointer(ptr);
+                return true;
+            }
+            device = null;
+            if (hresult == E_NOTFOUND)
+            {
+                return false;
+            }
+            CoreAudioException.ThrowIfFailed(hresult);
+            return false;
+        }
+
+        /// <summary>
+        /// Resolves an endpoint by its <see cref="MMDevice.ID"/> string.
+        /// </summary>
         public MMDevice GetDevice(string id)
         {
-            Marshal.ThrowExceptionForHR(realEnumerator.GetDevice(id, out var device));
-            return new MMDevice(device);
+            CoreAudioException.ThrowIfFailed(realEnumerator.GetDevice(id, out var ptr));
+            return WrapDevicePointer(ptr);
         }
 
         /// <summary>
-        /// Registers a call back for Device Events
+        /// Wraps a fresh <c>IMMDevice*</c> from the enumerator into an <see cref="MMDevice"/>,
+        /// projecting via ComWrappers (UniqueInstance) and releasing the input pointer.
         /// </summary>
-        /// <param name="client">Object implementing IMMNotificationClient type casted as IMMNotificationClient interface</param>
-        /// <returns></returns>
-        public int RegisterEndpointNotificationCallback([In] [MarshalAs(UnmanagedType.Interface)] IMMNotificationClient client)
+        private static MMDevice WrapDevicePointer(IntPtr ptr)
         {
-            return realEnumerator.RegisterEndpointNotificationCallback(client);
+            try
+            {
+                return new MMDevice((IMMDevice)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                    ptr, CreateObjectFlags.UniqueInstance));
+            }
+            finally
+            {
+                Marshal.Release(ptr);
+            }
         }
 
         /// <summary>
-        /// Unregisters a call back for Device Events
+        /// Subscribes <paramref name="client"/> to endpoint change notifications
+        /// (device added / removed / state change / default changed / property value change).
         /// </summary>
-        /// <param name="client">Object implementing IMMNotificationClient type casted as IMMNotificationClient interface </param>
-        /// <returns></returns>
-        public int UnregisterEndpointNotificationCallback([In] [MarshalAs(UnmanagedType.Interface)] IMMNotificationClient client)
+        /// <returns>The HRESULT from the underlying COM call.</returns>
+        public int RegisterEndpointNotificationCallback(IMMNotificationClient client)
         {
-            return realEnumerator.UnregisterEndpointNotificationCallback(client);
+            var ptr = QueryNotificationClientInterface(client);
+            try
+            {
+                return realEnumerator.RegisterEndpointNotificationCallback(ptr);
+            }
+            finally
+            {
+                Marshal.Release(ptr);
+            }
+        }
+
+        /// <summary>
+        /// Removes a previously registered notification subscription.
+        /// </summary>
+        /// <returns>The HRESULT from the underlying COM call.</returns>
+        public int UnregisterEndpointNotificationCallback(IMMNotificationClient client)
+        {
+            var ptr = QueryNotificationClientInterface(client);
+            try
+            {
+                return realEnumerator.UnregisterEndpointNotificationCallback(ptr);
+            }
+            finally
+            {
+                Marshal.Release(ptr);
+            }
+        }
+
+        // ComWrappers CCWs return a distinct IntPtr per interface (and a separate vtable
+        // for IUnknown). RegisterEndpointNotificationCallback expects an IMMNotificationClient*,
+        // so QI for the specific IID instead of passing the IUnknown CCW pointer directly.
+        private static IntPtr QueryNotificationClientInterface(IMMNotificationClient client)
+        {
+            var unknownPtr = ComActivation.ComWrappers.GetOrCreateComInterfaceForObject(client, CreateComInterfaceFlags.None);
+            try
+            {
+                Marshal.ThrowExceptionForHR(Marshal.QueryInterface(unknownPtr, in IID_IMMNotificationClient, out var ifacePtr));
+                return ifacePtr;
+            }
+            finally
+            {
+                Marshal.Release(unknownPtr);
+            }
         }
 
         /// <inheritdoc/>
@@ -132,17 +202,19 @@ namespace NAudio.CoreAudioApi
         }
 
         /// <summary>
-        /// Called to dispose/finalize contained objects.
+        /// Releases the underlying COM enumerator. Safe to call multiple times.
         /// </summary>
-        /// <param name="disposing">True if disposing, false if called from a finalizer.</param>
+        /// <param name="disposing"><c>true</c> when called from <see cref="Dispose()"/>.</param>
         protected virtual void Dispose(bool disposing)
         {
             if (disposing)
             {
                 if (realEnumerator != null)
                 {
-                    // although GC would do this for us, we want it done now
-                    Marshal.ReleaseComObject(realEnumerator);
+                    if ((object)realEnumerator is ComObject co)
+                    {
+                        co.FinalRelease();
+                    }
                     realEnumerator = null;
                 }
             }

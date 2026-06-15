@@ -1,28 +1,17 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>netstandard2.0</TargetFramework>
-    <Authors>Mark Heath</Authors>
-    <Version>2.3.0</Version>
-    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <SignAssembly>true</SignAssembly>
-    <AssemblyOriginatorKeyFile>..\NAudioStrongNameKey.snk</AssemblyOriginatorKeyFile>
-    <PackageProjectUrl>https://github.com/naudio/NAudio</PackageProjectUrl>
-    <PackageTags>C# .NET audio sound</PackageTags>
-    <RepositoryUrl>https://github.com/naudio/NAudio</RepositoryUrl>
-    <Copyright>© Mark Heath 2026</Copyright>
+    <TargetFramework>net9.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageIcon>naudio-icon.png</PackageIcon>
+    <IsAotCompatible>true</IsAotCompatible>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Description>Core audio types, wave format and provider interfaces, sample providers, file readers/writers, DSP, and resampling for the NAudio audio library.</Description>
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="..\naudio-icon.png">
-      <Pack>True</Pack>
-      <PackagePath></PackagePath>
-    </None>
+    <!-- TensorPrimitives powers the vectorised mix-add / volume kernels.
+         Ships as a NuGet package until it is incorporated into the BCL. -->
+    <PackageReference Include="System.Numerics.Tensors" Version="9.0.0" />
   </ItemGroup>
-
 
 </Project>

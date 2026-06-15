@@ -1,10 +1,13 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using NAudio.CoreAudioApi.Interfaces;
 using NAudio.MediaFoundation;
 using NAudio.Utils;
+using NAudio.CoreAudioApi;
+using NAudio.MediaFoundation.Interfaces;
 
 // ReSharper disable once CheckNamespace
 namespace NAudio.Wave
@@ -44,7 +47,7 @@ namespace NAudio.Wave
             public bool RequestFloatOutput { get; set; }
             /// <summary>
             /// If true, the reader object created in the constructor is used in Read
-            /// Should only be set to true if you are working entirely on an STA thread, or 
+            /// Should only be set to true if you are working entirely on an STA thread, or
             /// entirely with MTA threads.
             /// </summary>
             public bool SingleReaderObject { get; set; }
@@ -61,7 +64,7 @@ namespace NAudio.Wave
         protected MediaFoundationReader()
         {
         }
-        
+
         /// <summary>
         /// Creates a new MediaFoundationReader based on the supplied file
         /// </summary>
@@ -84,7 +87,7 @@ namespace NAudio.Wave
         }
 
         /// <summary>
-        /// Initializes 
+        /// Initializes
         /// </summary>
         protected void Init(MediaFoundationReaderSettings initialSettings)
         {
@@ -94,7 +97,8 @@ namespace NAudio.Wave
 
             waveFormat = GetCurrentWaveFormat(reader);
 
-            reader.SetStreamSelection(MediaFoundationInterop.MF_SOURCE_READER_FIRST_AUDIO_STREAM, true);
+            MediaFoundationException.ThrowIfFailed(
+                reader.SetStreamSelection(MediaFoundationInterop.MF_SOURCE_READER_FIRST_AUDIO_STREAM, 1));
             length = GetLength(reader);
 
             if (settings.SingleReaderObject)
@@ -103,16 +107,18 @@ namespace NAudio.Wave
             }
             else
             {
-                Marshal.ReleaseComObject(reader);
+                ((ComObject)(object)reader).FinalRelease();
             }
         }
 
         private WaveFormat GetCurrentWaveFormat(IMFSourceReader reader)
         {
-            reader.GetCurrentMediaType(MediaFoundationInterop.MF_SOURCE_READER_FIRST_AUDIO_STREAM, out IMFMediaType uncompressedMediaType);
+            MediaFoundationException.ThrowIfFailed(
+                reader.GetCurrentMediaType(MediaFoundationInterop.MF_SOURCE_READER_FIRST_AUDIO_STREAM, out IntPtr mediaTypePtr));
+            var rcw = (IMFMediaType)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(mediaTypePtr, CreateObjectFlags.UniqueInstance);
+            using var outputMediaType = new MediaType(mediaTypePtr, rcw);
 
             // Two ways to query it, first is to ask for properties (second is to convert into WaveFormatEx using MFCreateWaveFormatExFromMFMediaType)
-            var outputMediaType = new MediaType(uncompressedMediaType);
             Guid actualMajorType = outputMediaType.MajorType;
             Debug.Assert(actualMajorType == MediaTypes.MFMediaType_Audio);
             Guid audioSubType = outputMediaType.SubType;
@@ -130,19 +136,22 @@ namespace NAudio.Wave
 
         private static MediaType GetCurrentMediaType(IMFSourceReader reader)
         {
-            reader.GetCurrentMediaType(MediaFoundationInterop.MF_SOURCE_READER_FIRST_AUDIO_STREAM, out IMFMediaType mediaType);
-            return new MediaType(mediaType);
+            MediaFoundationException.ThrowIfFailed(
+                reader.GetCurrentMediaType(MediaFoundationInterop.MF_SOURCE_READER_FIRST_AUDIO_STREAM, out IntPtr mediaTypePtr));
+            var rcw = (IMFMediaType)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(mediaTypePtr, CreateObjectFlags.UniqueInstance);
+            return new MediaType(mediaTypePtr, rcw);
         }
 
         /// <summary>
         /// Creates the reader (overridable by )
         /// </summary>
-        protected virtual IMFSourceReader CreateReader(MediaFoundationReaderSettings settings)
+        private protected virtual IMFSourceReader CreateReader(MediaFoundationReaderSettings settings)
         {
-            IMFSourceReader reader;
-            MediaFoundationInterop.MFCreateSourceReaderFromURL(file, null, out reader);
-            reader.SetStreamSelection(MediaFoundationInterop.MF_SOURCE_READER_ALL_STREAMS, false);
-            reader.SetStreamSelection(MediaFoundationInterop.MF_SOURCE_READER_FIRST_AUDIO_STREAM, true);
+            var reader = MediaFoundationApi.CreateSourceReaderFromUrl(file);
+            MediaFoundationException.ThrowIfFailed(
+                reader.SetStreamSelection(MediaFoundationInterop.MF_SOURCE_READER_ALL_STREAMS, 0));
+            MediaFoundationException.ThrowIfFailed(
+                reader.SetStreamSelection(MediaFoundationInterop.MF_SOURCE_READER_FIRST_AUDIO_STREAM, 1));
 
             // Create a partial media type indicating that we want uncompressed PCM audio
 
@@ -150,7 +159,7 @@ namespace NAudio.Wave
             partialMediaType.MajorType = MediaTypes.MFMediaType_Audio;
             partialMediaType.SubType = settings.RequestFloatOutput ? AudioSubtypes.MFAudioFormat_Float : AudioSubtypes.MFAudioFormat_PCM;
 
-            var currentMediaType = GetCurrentMediaType(reader);
+            using var currentMediaType = GetCurrentMediaType(reader);
 
             // mono, low sample rate files can go wrong on Windows 10 unless we specify here
             partialMediaType.ChannelCount = currentMediaType.ChannelCount;
@@ -160,21 +169,32 @@ namespace NAudio.Wave
             {
                 // set the media type
                 // can return MF_E_INVALIDMEDIATYPE if not supported
-                reader.SetCurrentMediaType(MediaFoundationInterop.MF_SOURCE_READER_FIRST_AUDIO_STREAM, IntPtr.Zero, partialMediaType.MediaFoundationObject);
-            }
-            catch (COMException ex) when (ex.GetHResult() == MediaFoundationErrors.MF_E_INVALIDMEDIATYPE)
-            {               
-                // HE-AAC (and v2) seems to halve the samplerate
-                if (currentMediaType.SubType == AudioSubtypes.MFAudioFormat_AAC && currentMediaType.ChannelCount == 1)
+                int hr = reader.SetCurrentMediaType(MediaFoundationInterop.MF_SOURCE_READER_FIRST_AUDIO_STREAM, IntPtr.Zero, partialMediaType.MediaFoundationObject);
+                if (hr == MediaFoundationErrors.MF_E_INVALIDMEDIATYPE)
                 {
-                    partialMediaType.SampleRate = currentMediaType.SampleRate *= 2;
-                    partialMediaType.ChannelCount = currentMediaType.ChannelCount *= 2;
-                    reader.SetCurrentMediaType(MediaFoundationInterop.MF_SOURCE_READER_FIRST_AUDIO_STREAM, IntPtr.Zero, partialMediaType.MediaFoundationObject);
+                    // HE-AAC (and v2) seems to halve the samplerate
+                    if (currentMediaType.SubType == AudioSubtypes.MFAudioFormat_AAC && currentMediaType.ChannelCount == 1)
+                    {
+                        partialMediaType.SampleRate = currentMediaType.SampleRate * 2;
+                        partialMediaType.ChannelCount = currentMediaType.ChannelCount * 2;
+                        MediaFoundationException.ThrowIfFailed(
+                            reader.SetCurrentMediaType(MediaFoundationInterop.MF_SOURCE_READER_FIRST_AUDIO_STREAM, IntPtr.Zero, partialMediaType.MediaFoundationObject));
+                    }
+                    else
+                    {
+                        MediaFoundationException.ThrowIfFailed(hr);
+                    }
                 }
-                else { throw; }
+                else
+                {
+                    MediaFoundationException.ThrowIfFailed(hr);
+                }
+            }
+            finally
+            {
+                partialMediaType.Dispose();
             }
 
-            Marshal.ReleaseComObject(currentMediaType.MediaFoundationObject);
             return reader;
         }
 
@@ -192,16 +212,13 @@ namespace NAudio.Wave
                     // this doesn't support telling us its duration (might be streaming)
                     return 0;
                 }
-                if (hResult != 0)
-                {
-                    Marshal.ThrowExceptionForHR(hResult);
-                }
+                MediaFoundationException.ThrowIfFailed(hResult);
                 var variant = Marshal.PtrToStructure<PropVariant>(variantPtr);
 
                 var lengthInBytes = (((long)variant.Value) * waveFormat.AverageBytesPerSecond) / 10000000L;
                 return lengthInBytes;
             }
-            finally 
+            finally
             {
                 PropVariant.Clear(variantPtr);
                 Marshal.FreeHGlobal(variantPtr);
@@ -229,6 +246,27 @@ namespace NAudio.Wave
         /// <returns>Number of bytes read; 0 indicates end of stream</returns>
         public override int Read(byte[] buffer, int offset, int count)
         {
+            return Read(buffer.AsSpan(offset, count));
+        }
+
+        private int ReadFromDecoderBuffer(Span<byte> destination)
+        {
+            int bytesFromDecoderOutput = Math.Min(destination.Length, decoderOutputCount);
+            decoderOutputBuffer.AsSpan(decoderOutputOffset, bytesFromDecoderOutput).CopyTo(destination);
+            decoderOutputOffset += bytesFromDecoderOutput;
+            decoderOutputCount -= bytesFromDecoderOutput;
+            if (decoderOutputCount == 0)
+            {
+                decoderOutputOffset = 0;
+            }
+            return bytesFromDecoderOutput;
+        }
+
+        /// <summary>
+        /// Reads from this wave stream into a span (zero-copy path for WASAPI playback)
+        /// </summary>
+        public override int Read(Span<byte> buffer)
+        {
             if (pReader == null)
             {
                 pReader = CreateReader(settings);
@@ -239,60 +277,82 @@ namespace NAudio.Wave
             }
 
             int bytesWritten = 0;
-            // read in any leftovers from last time
             if (decoderOutputCount > 0)
             {
-                bytesWritten += ReadFromDecoderBuffer(buffer, offset, count - bytesWritten);
+                bytesWritten += ReadFromDecoderBuffer(buffer);
             }
 
-            while (bytesWritten < count)
+            while (bytesWritten < buffer.Length)
             {
-                pReader.ReadSample(MediaFoundationInterop.MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, 
-                    out int actualStreamIndex, out MF_SOURCE_READER_FLAG dwFlags, out ulong timestamp, out IMFSample pSample);
-                if ((dwFlags & MF_SOURCE_READER_FLAG.MF_SOURCE_READERF_ENDOFSTREAM) != 0)
+                MediaFoundationException.ThrowIfFailed(
+                    pReader.ReadSample(MediaFoundationInterop.MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0,
+                        out int actualStreamIndex, out int dwFlagsInt, out long timestamp, out IntPtr pSamplePtr));
+                var dwFlags = (SourceReaderFlags)dwFlagsInt;
+                if ((dwFlags & SourceReaderFlags.EndOfStream) != 0)
                 {
-                    // reached the end of the stream
+                    if (pSamplePtr != IntPtr.Zero) Marshal.Release(pSamplePtr);
                     break;
                 }
-                else if ((dwFlags & MF_SOURCE_READER_FLAG.MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) != 0)
+                else if ((dwFlags & SourceReaderFlags.CurrentMediaTypeChanged) != 0)
                 {
                     waveFormat = GetCurrentWaveFormat(pReader);
                     OnWaveFormatChanged();
-                    // carry on, but user must handle the change of format
+                }
+                else if ((dwFlags & (SourceReaderFlags.StreamTick | SourceReaderFlags.NewStream
+                                     | SourceReaderFlags.NativeMediaTypeChanged | SourceReaderFlags.AllEffectsRemoved)) != 0)
+                {
+                    // Non-fatal informational flags. Per MS docs each of these can be
+                    // returned with a null sample; the caller should release any sample
+                    // pointer and call ReadSample again. Treating them as errors caused
+                    // legitimate gap / new-stream signals to abort the read.
+                    if (pSamplePtr != IntPtr.Zero) Marshal.Release(pSamplePtr);
+                    continue;
                 }
                 else if (dwFlags != 0)
                 {
+                    if (pSamplePtr != IntPtr.Zero) Marshal.Release(pSamplePtr);
                     throw new InvalidOperationException($"MediaFoundationReadError {dwFlags}");
                 }
 
-                pSample.ConvertToContiguousBuffer(out IMFMediaBuffer pBuffer);
-                pBuffer.Lock(out IntPtr pAudioData, out int pcbMaxLength, out int cbBuffer);
-                EnsureBuffer(cbBuffer);
-                Marshal.Copy(pAudioData, decoderOutputBuffer, 0, cbBuffer);
-                decoderOutputOffset = 0;
-                decoderOutputCount = cbBuffer;
+                if (pSamplePtr == IntPtr.Zero)
+                {
+                    continue;
+                }
 
-                bytesWritten += ReadFromDecoderBuffer(buffer, offset + bytesWritten, count - bytesWritten);
+                IMFSample pSample = null;
+                IntPtr pBufferPtr = IntPtr.Zero;
+                IMFMediaBuffer pBuffer = null;
+                bool bufferLocked = false;
+                try
+                {
+                    pSample = (IMFSample)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(pSamplePtr, CreateObjectFlags.UniqueInstance);
+                    MediaFoundationException.ThrowIfFailed(pSample.ConvertToContiguousBuffer(out pBufferPtr));
+                    pBuffer = (IMFMediaBuffer)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(pBufferPtr, CreateObjectFlags.UniqueInstance);
+                    MediaFoundationException.ThrowIfFailed(pBuffer.Lock(out IntPtr pAudioData, out int pcbMaxLength, out int cbBuffer));
+                    bufferLocked = true;
+                    EnsureBuffer(cbBuffer);
+                    Marshal.Copy(pAudioData, decoderOutputBuffer, 0, cbBuffer);
+                    decoderOutputOffset = 0;
+                    decoderOutputCount = cbBuffer;
 
-                pBuffer.Unlock();
-                Marshal.ReleaseComObject(pBuffer);
-                Marshal.ReleaseComObject(pSample);
+                    bytesWritten += ReadFromDecoderBuffer(buffer.Slice(bytesWritten));
+                }
+                finally
+                {
+                    // Capture the hresult but defer throwing until every COM object has been
+                    // released, otherwise a failed Unlock would leak the buffer and the sample.
+                    int unlockHr = 0;
+                    if (pBuffer != null && bufferLocked)
+                    {
+                        unlockHr = pBuffer.Unlock();
+                    }
+                    ComActivation.ReleaseBoth(pBuffer, pBufferPtr);
+                    ComActivation.ReleaseBoth(pSample, pSamplePtr);
+                    MediaFoundationException.ThrowIfFailed(unlockHr);
+                }
             }
             position += bytesWritten;
             return bytesWritten;
-        }
-
-        private int ReadFromDecoderBuffer(byte[] buffer, int offset, int needed)
-        {
-            int bytesFromDecoderOutput = Math.Min(needed, decoderOutputCount);
-            Array.Copy(decoderOutputBuffer, decoderOutputOffset, buffer, offset, bytesFromDecoderOutput);
-            decoderOutputOffset += bytesFromDecoderOutput;
-            decoderOutputCount -= bytesFromDecoderOutput;
-            if (decoderOutputCount == 0)
-            {
-                decoderOutputOffset = 0;
-            }
-            return bytesFromDecoderOutput;
         }
 
         /// <summary>
@@ -340,7 +400,7 @@ namespace NAudio.Wave
 
         private void Reposition(long desiredPosition)
         {
-            long nsPosition = (10000000L * repositionTo) / waveFormat.AverageBytesPerSecond;
+            long nsPosition = (10000000L * desiredPosition) / waveFormat.AverageBytesPerSecond;
             var pv = PropVariant.FromLong(nsPosition);
             var ptr = Marshal.AllocHGlobal(Marshal.SizeOf(pv));
             try
@@ -348,7 +408,7 @@ namespace NAudio.Wave
                 Marshal.StructureToPtr(pv, ptr, false);
 
                 // should pass in a variant of type VT_I8 which is a long containing time in 100nanosecond units
-                pReader.SetCurrentPosition(Guid.Empty, ptr);
+                MediaFoundationException.ThrowIfFailed(pReader.SetCurrentPosition(Guid.Empty, ptr));
             }
             finally
             {
@@ -368,7 +428,7 @@ namespace NAudio.Wave
         {
             if (pReader != null)
             {
-                Marshal.ReleaseComObject(pReader);
+                ((ComObject)(object)pReader).FinalRelease();
                 pReader = null;
             }
             base.Dispose(disposing);

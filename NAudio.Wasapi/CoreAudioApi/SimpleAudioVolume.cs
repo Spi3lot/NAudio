@@ -5,6 +5,7 @@
 
 using System;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using NAudio.CoreAudioApi.Interfaces;
 
 namespace NAudio.CoreAudioApi
@@ -14,36 +15,54 @@ namespace NAudio.CoreAudioApi
     /// </summary>
     public class SimpleAudioVolume : IDisposable
     {
-        private readonly ISimpleAudioVolume simpleAudioVolume;
+        private ISimpleAudioVolume simpleAudioVolume;
+        private readonly bool ownsInterface;
 
         /// <summary>
-        /// Creates a new Audio endpoint volume
+        /// Creates a new SimpleAudioVolume wrapper — ownership of the COM pointer is transferred.
         /// </summary>
-        /// <param name="realSimpleVolume">ISimpleAudioVolume COM interface</param>
-        internal SimpleAudioVolume(ISimpleAudioVolume realSimpleVolume)
+        /// <param name="nativePointer">Raw COM pointer — ownership is transferred to this instance</param>
+        internal SimpleAudioVolume(IntPtr nativePointer)
         {
-            simpleAudioVolume = realSimpleVolume;
+            try
+            {
+                simpleAudioVolume = (ISimpleAudioVolume)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                    nativePointer, CreateObjectFlags.UniqueInstance);
+            }
+            finally
+            {
+                Marshal.Release(nativePointer);
+            }
+            ownsInterface = true;
         }
 
-        #region IDisposable Members
+        /// <summary>
+        /// Creates a new SimpleAudioVolume wrapper from a borrowed interface (e.g. QI from AudioSessionControl).
+        /// This instance does not own the COM pointer.
+        /// </summary>
+        /// <param name="borrowed">ISimpleAudioVolume obtained via QI on an existing RCW</param>
+        internal SimpleAudioVolume(ISimpleAudioVolume borrowed)
+        {
+            simpleAudioVolume = borrowed;
+            ownsInterface = false;
+        }
 
         /// <summary>
-        /// Dispose
+        /// Releases the underlying COM reference when this wrapper owns it.
+        /// Borrowed wrappers (constructed from a parent's RCW) do not release.
         /// </summary>
         public void Dispose()
         {
+            if (simpleAudioVolume != null)
+            {
+                if (ownsInterface && (object)simpleAudioVolume is ComObject co)
+                {
+                    co.FinalRelease();
+                }
+                simpleAudioVolume = null;
+            }
             GC.SuppressFinalize(this);
         }
-        
-        /// <summary>
-        /// Finalizer
-        /// </summary>
-        ~SimpleAudioVolume()
-        {
-            Dispose();
-        }
-
-        #endregion
 
         /// <summary>
         /// Allows the user to adjust the volume from
@@ -53,14 +72,14 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(simpleAudioVolume.GetMasterVolume(out var result));
+                CoreAudioException.ThrowIfFailed(simpleAudioVolume.GetMasterVolume(out var result));
                 return result;
             }
             set
             {
                 if ((value >= 0.0) && (value <= 1.0))
                 {
-                    Marshal.ThrowExceptionForHR(simpleAudioVolume.SetMasterVolume(value, Guid.Empty));
+                    CoreAudioException.ThrowIfFailed(simpleAudioVolume.SetMasterVolume(value, Guid.Empty));
                 }
                 // should throw something if out of range
             }
@@ -73,12 +92,12 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(simpleAudioVolume.GetMute(out var result));
+                CoreAudioException.ThrowIfFailed(simpleAudioVolume.GetMute(out var result));
                 return result;
             }
             set
             {
-                Marshal.ThrowExceptionForHR(simpleAudioVolume.SetMute(value, Guid.Empty));
+                CoreAudioException.ThrowIfFailed(simpleAudioVolume.SetMute(value, Guid.Empty));
             }
         }
     }

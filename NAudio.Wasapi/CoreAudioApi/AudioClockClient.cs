@@ -2,6 +2,7 @@
 using NAudio.CoreAudioApi.Interfaces;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 
 namespace NAudio.CoreAudioApi
 {
@@ -12,12 +13,17 @@ namespace NAudio.CoreAudioApi
     {
         IAudioClock audioClockClientInterface;
 
-        internal AudioClockClient(IAudioClock audioClockClientInterface)
+        internal AudioClockClient(IntPtr nativePointer)
         {
-            this.audioClockClientInterface = audioClockClientInterface;
-
-            //Stopwatch.GetTimestamp();
-            //Stopwatch.Frequency
+            try
+            {
+                audioClockClientInterface = (IAudioClock)ComActivation.ComWrappers.GetOrCreateObjectForComInstance(
+                    nativePointer, CreateObjectFlags.UniqueInstance);
+            }
+            finally
+            {
+                Marshal.Release(nativePointer);
+            }
         }
 
         /// <summary>
@@ -27,7 +33,7 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(audioClockClientInterface.GetCharacteristics(out var characteristics));
+                CoreAudioException.ThrowIfFailed(audioClockClientInterface.GetCharacteristics(out var characteristics));
                 return (int)characteristics;
             }
         }
@@ -39,7 +45,7 @@ namespace NAudio.CoreAudioApi
         {
             get
             {
-                Marshal.ThrowExceptionForHR(audioClockClientInterface.GetFrequency(out var freq));
+                CoreAudioException.ThrowIfFailed(audioClockClientInterface.GetFrequency(out var freq));
                 return freq;
             }
         }
@@ -51,7 +57,7 @@ namespace NAudio.CoreAudioApi
         {
             var hr = audioClockClientInterface.GetPosition(out position, out qpcPosition);
             if (hr == -1) return false;
-            Marshal.ThrowExceptionForHR(hr);
+            CoreAudioException.ThrowIfFailed(hr);
             return true;
         }
 
@@ -107,12 +113,13 @@ namespace NAudio.CoreAudioApi
         {
             if (audioClockClientInterface != null)
             {
-                // althugh GC would do this for us, we want it done now
-                // to let us reopen WASAPI
-                Marshal.ReleaseComObject(audioClockClientInterface);
+                if ((object)audioClockClientInterface is ComObject co)
+                {
+                    co.FinalRelease();
+                }
                 audioClockClientInterface = null;
-                GC.SuppressFinalize(this);
             }
+            GC.SuppressFinalize(this);
         }
 
         #endregion
